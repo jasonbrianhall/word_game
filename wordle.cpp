@@ -10,6 +10,7 @@
 #include "words.h"
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <random>
 #include <string>
 #include <unordered_set>
@@ -61,7 +62,8 @@ struct TextRenderer {
 } g_text;
 
 // Draws text centered at (cx, cy); vertical centering is on the capital letters.
-static void drawText(SDL_Renderer* r, const std::string& s, int cx, int cy, int pt, SDL_Color col) {
+static void drawText(SDL_Renderer* r, const std::string& s, int cx, int cy, int pt, SDL_Color col,
+                     float sx = 1.f, float sy = 1.f) {
     if (s.empty()) return;
     TTF_Font* f = g_text.font(pt);
     if (!f) return;
@@ -78,6 +80,11 @@ static void drawText(SDL_Renderer* r, const std::string& s, int cx, int cy, int 
     SDL_QueryTexture(tex, nullptr, nullptr, &w, &h);
     TTF_GlyphMetrics(f, 'H', &minx, &maxx, &miny, &capH, nullptr);
     SDL_Rect dst{cx - w / 2, cy - (TTF_FontAscent(f) - capH / 2), w, h};
+    if (sx != 1.f || sy != 1.f) {  // scale about (cx, cy)
+        dst = {cx + (int)std::lround((dst.x - cx) * sx), cy + (int)std::lround((dst.y - cy) * sy),
+               (int)std::lround(w * sx), (int)std::lround(h * sy)};
+        if (dst.w <= 0 || dst.h <= 0) return;
+    }
     SDL_RenderCopy(r, tex, nullptr, &dst);
 }
 
@@ -135,6 +142,20 @@ static const char* DEFAULT_WORDS[] = {
     "WOUND","WRITE","WRONG","YOUNG","YOUTH","ZEBRA",
 };
 
+// ---------- Animation timing (ms) ----------
+constexpr float PI = 3.14159265f;
+constexpr int FLIP_MS = 500, FLIP_STAGGER = 300;   // tile reveal
+constexpr int POP_MS = 100;                         // letter typed
+constexpr int SHAKE_MS = 600;                       // invalid guess
+constexpr int BOUNCE_MS = 500, BOUNCE_STAGGER = 100; // win celebration
+
+// Returns true while an animation started at `start` (0 = never) is running; t = elapsed ms.
+static bool running(Uint32 start, Uint32 dur, Uint32 now, Uint32& t) {
+    if (!start) return false;
+    t = now - start;
+    return t < dur;
+}
+
 // ---------- Game logic ----------
 struct Game {
     std::vector<std::string> answers;
@@ -148,6 +169,26 @@ struct Game {
     bool over = false, won = false;
     std::string msg;
     Uint32 msgUntil = 0;
+
+    // Animation state
+    int revealRow = -1;              // row currently flipping, -1 = none
+    Uint32 revealStart = 0, popStart = 0, shakeStart = 0, bounceStart = 0;
+    int popCol = -1;
+    std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
+
+    Uint32 revealEnd() const { return revealStart + 4 * FLIP_STAGGER + FLIP_MS; }
+    void update(Uint32 now) {
+        if (revealRow >= 0 && now >= revealEnd()) {
+            revealRow = -1;
+            keys = pendingKeys;
+            if (won) bounceStart = now;
+        }
+    }
+    bool animating(Uint32 now) const {
+        Uint32 t;
+        return revealRow >= 0 || running(popStart, POP_MS, now, t) || running(shakeStart, SHAKE_MS, now, t) ||
+               running(bounceStart, 4 * BOUNCE_STAGGER + BOUNCE_MS, now, t);
+    }
     std::mt19937 rng{std::random_device{}()};
 
     void loadWords() {
@@ -169,9 +210,14 @@ struct Game {
         keys.fill(EMPTY);
         cur.clear();
         row = 0; over = won = false; msgUntil = 0;
+        revealRow = -1; revealStart = popStart = shakeStart = bounceStart = 0; popCol = -1;
     }
 
-    void flash(const std::string& m) { msg = m; msgUntil = SDL_GetTicks() + 1500; }
+    void flash(const std::string& m) {
+        msg = m;
+        msgUntil = SDL_GetTicks() + 1500;
+        shakeStart = SDL_GetTicks();
+    }
 
     void submit() {
         std::array<Mark, 5> res; res.fill(GRAY);
@@ -183,12 +229,15 @@ struct Game {
         for (int i = 0; i < 5; ++i)
             if (res[i] != GREEN && counts[cur[i] - 'A'] > 0) { res[i] = YELLOW; counts[cur[i] - 'A']--; }
 
+        pendingKeys = keys;
         for (int i = 0; i < 5; ++i) {
-            Mark& k = keys[cur[i] - 'A'];
+            Mark& k = pendingKeys[cur[i] - 'A'];
             if (res[i] > k) k = res[i];  // GREEN > YELLOW > GRAY
         }
         guesses[row] = cur;
         marks[row] = res;
+        revealRow = row;
+        revealStart = SDL_GetTicks();
         ++row;
         if (cur == answer) { over = won = true; }
         else if (row == 6) { over = true; }
@@ -196,8 +245,11 @@ struct Game {
     }
 
     void input(char c) {
+        if (revealRow >= 0) return;  // ignore input while tiles are flipping
         if (over) { if (c == '\n') reset(); return; }
-        if (c >= 'A' && c <= 'Z') { if (cur.size() < 5) cur += c; }
+        if (c >= 'A' && c <= 'Z') {
+            if (cur.size() < 5) { cur += c; popCol = (int)cur.size() - 1; popStart = SDL_GetTicks(); }
+        }
         else if (c == '\b') { if (!cur.empty()) cur.pop_back(); }
         else if (c == '\n') {
             if (cur.size() < 5) flash("NOT ENOUGH LETTERS");
@@ -244,20 +296,45 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
     drawText(r, "WORDLE", WIN_W / 2, 30, 34, WHITE);
 
     // Board
+    Uint32 now = SDL_GetTicks(), t;
     for (int row = 0; row < 6; ++row) {
-        std::string s = row < g.row ? g.guesses[row] : (row == g.row && !g.over ? g.cur : "");
+        bool typingRow = row == g.row && !g.over;
+        std::string s = row < g.row ? g.guesses[row] : (typingRow ? g.cur : "");
+
+        int shakeX = 0;  // horizontal wobble on invalid guess
+        if (typingRow && running(g.shakeStart, SHAKE_MS, now, t))
+            shakeX = (int)(std::sin(t * 0.07f) * 9.f * (1.f - t / (float)SHAKE_MS));
+
         for (int col = 0; col < 5; ++col) {
-            SDL_Rect rc{GRID_X + col * (TILE + GAP), GRID_Y + row * (TILE + GAP), TILE, TILE};
+            int cx = GRID_X + col * (TILE + GAP) + TILE / 2 + shakeX;
+            int cy = GRID_Y + row * (TILE + GAP) + TILE / 2;
             Mark m = row < g.row ? g.marks[row][col] : (col < (int)s.size() ? PENDING : EMPTY);
+            float sx = 1.f, sy = 1.f;
+
+            if (row == g.revealRow) {  // flip: squash to 0 height, swap color at midpoint, expand
+                int ft = (int)(now - g.revealStart) - col * FLIP_STAGGER;
+                if (ft < FLIP_MS / 2) m = PENDING;
+                if (ft > 0 && ft < FLIP_MS) sy = std::fabs(std::cos(ft / (float)FLIP_MS * PI));
+            }
+            if (typingRow && col == g.popCol && running(g.popStart, POP_MS, now, t))
+                sx = sy = 1.f + 0.12f * std::sin(t / (float)POP_MS * PI);
+            if (g.won && row == g.row - 1 && g.revealRow < 0 && g.bounceStart) {
+                int bt = (int)(now - g.bounceStart) - col * BOUNCE_STAGGER;
+                if (bt > 0 && bt < BOUNCE_MS) cy -= (int)(std::sin(bt / (float)BOUNCE_MS * PI) * 24.f);
+            }
+
+            int w = (int)std::lround(TILE * sx), h = (int)std::lround(TILE * sy);
+            if (h < 1) continue;
+            SDL_Rect rc{cx - w / 2, cy - h / 2, w, h};
             if (m == EMPTY || m == PENDING) drawOutline(r, rc, m == PENDING ? BORDER_ACTIVE : BORDER);
             else { setColor(r, markColor(m)); SDL_RenderFillRect(r, &rc); }
             if (col < (int)s.size())
-                drawText(r, std::string(1, s[col]), rc.x + TILE / 2, rc.y + TILE / 2, 36, WHITE);
+                drawText(r, std::string(1, s[col]), cx, cy, 36, WHITE, sx, sy);
         }
     }
 
     // Messages
-    if (g.over) {
+    if (g.over && g.revealRow < 0) {
         static const char* praise[6] = {"GENIUS", "MAGNIFICENT", "IMPRESSIVE", "SPLENDID", "GREAT", "PHEW"};
         drawText(r, g.won ? praise[g.row - 1] : "ANSWER " + g.answer, WIN_W / 2, 480, 18, WHITE);
         drawText(r, "PRESS ENTER TO PLAY AGAIN", WIN_W / 2, 506, 15, KEY_DEFAULT);
@@ -291,25 +368,35 @@ int main(int, char**) {
     game.reset();
     auto kb = buildKeyboard();
 
-    bool running = true;
-    while (running) {
-        SDL_Event e;
-        while (SDL_WaitEventTimeout(&e, 50)) {
-            if (e.type == SDL_QUIT) running = false;
+    bool quit = false;
+    auto handle = [&](const SDL_Event& e) {
+            if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode k = e.key.keysym.sym;
                 if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) game.input('\n');
                 else if (k == SDLK_BACKSPACE) game.input('\b');
-                else if (k == SDLK_ESCAPE) running = false;
+                else if (k == SDLK_ESCAPE) quit = true;
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 SDL_Point p{e.button.x, e.button.y};
                 for (const Key& k : kb)
                     if (SDL_PointInRect(&p, &k.r)) { game.input(k.c); break; }
             }
-            if (!running) break;
-        }
+    };
+
+    while (!quit) {
+        Uint32 frameStart = SDL_GetTicks();
+        bool anim = game.animating(frameStart);
+        SDL_Event e;
+        // Idle: sleep until input (or 50 ms, for message timeouts). Animating: run at ~60 fps.
+        if (!anim && SDL_WaitEventTimeout(&e, 50)) handle(e);
+        while (SDL_PollEvent(&e)) handle(e);
+        game.update(SDL_GetTicks());
         render(ren, game, kb);
+        if (anim) {
+            Uint32 el = SDL_GetTicks() - frameStart;
+            if (el < 16) SDL_Delay(16 - el);
+        }
     }
 
     g_text.shutdown();
