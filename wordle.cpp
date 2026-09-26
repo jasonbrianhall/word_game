@@ -1,5 +1,6 @@
 // Wordle in C++ / SDL2 + SDL_ttf, using the embedded DejaVu Sans Mono font.
-// Guesses are checked against words.h, generated from linux.words by gen_words.sh.
+// Guesses are checked against words.h (all 5-letter words in linux.words, from gen_words.sh);
+// answers come from answers.h (the most common of those, from gen_answers.py).
 // Build: make   (or: sh gen_words.sh > words.h && g++ -std=c++17 -O2 wordle.cpp -o wordle $(sdl2-config --cflags --libs) -lSDL2_ttf)
 
 #include <SDL2/SDL.h>
@@ -8,6 +9,7 @@
 #include <tuple>
 #include "DejaVuMono.h"
 #include "words.h"
+#include "answers.h"
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -104,44 +106,6 @@ static SDL_Color markColor(Mark m) {
     }
 }
 
-// ---------- Built-in answer list ----------
-static const char* DEFAULT_WORDS[] = {
-    "ABOUT","ABOVE","ACTOR","ADMIT","ADOPT","AFTER","AGAIN","AGENT","AGREE","ALARM",
-    "ALBUM","ALERT","ALIVE","ALLOW","ALONE","ANGER","ANGLE","ANGRY","APPLE","APPLY",
-    "ARENA","ARGUE","ARISE","ASIDE","AWARD","AWARE","BAKER","BASIC","BEACH","BEGIN",
-    "BEING","BELOW","BENCH","BIRTH","BLACK","BLAME","BLANK","BLIND","BLOCK","BLOOD",
-    "BOARD","BRAIN","BRAND","BREAD","BREAK","BRICK","BRIEF","BRING","BROAD","BROWN",
-    "BUILD","CABIN","CANDY","CARRY","CATCH","CAUSE","CHAIN","CHAIR","CHARM","CHART",
-    "CHASE","CHEAP","CHECK","CHEST","CHIEF","CHILD","CLAIM","CLASS","CLEAN","CLEAR",
-    "CLIMB","CLOCK","CLOSE","CLOUD","COAST","COUNT","COURT","COVER","CRAFT","CRANE",
-    "CRASH","CREAM","CRIME","CROWD","CURVE","CYCLE","DAILY","DANCE","DEALT","DELAY",
-    "DEPTH","DOUBT","DRAFT","DRAMA","DREAM","DRESS","DRINK","DRIVE","EARLY","EARTH",
-    "EIGHT","EMPTY","ENEMY","ENJOY","ENTER","EQUAL","ERROR","EVENT","EXACT","EXIST",
-    "EXTRA","FAITH","FALSE","FAULT","FEAST","FIELD","FIGHT","FINAL","FLAME","FLASH",
-    "FLOOR","FOCUS","FORCE","FRAME","FRESH","FRONT","FRUIT","FUNNY","GHOST","GIANT",
-    "GLASS","GLOVE","GRACE","GRADE","GRAIN","GRAND","GRANT","GRAPE","GRASS","GREAT",
-    "GREEN","GROUP","GUARD","GUESS","GUEST","GUIDE","HAPPY","HEART","HEAVY","HONEY",
-    "HORSE","HOTEL","HOUSE","HUMAN","HUMOR","IDEAL","IMAGE","INDEX","INNER","ISSUE",
-    "JUDGE","JUICE","KNIFE","LARGE","LASER","LAUGH","LAYER","LEARN","LEMON","LEVEL",
-    "LIGHT","LIMIT","LUCKY","LUNCH","MAGIC","MAJOR","MARCH","MATCH","MAYBE","METAL",
-    "MIGHT","MINOR","MODEL","MONEY","MONTH","MOUNT","MOUSE","MOUTH","MUSIC","NERVE",
-    "NEVER","NIGHT","NOISE","NORTH","NOVEL","NURSE","OCEAN","OFFER","OFTEN","ORDER",
-    "OTHER","OWNER","PAINT","PANEL","PAPER","PARTY","PEACE","PHONE","PIANO","PIECE",
-    "PILOT","PITCH","PLACE","PLAIN","PLANE","PLANT","PLATE","POINT","POUND","POWER",
-    "PRESS","PRICE","PRIDE","PRIME","PRIZE","PROOF","PROUD","QUEEN","QUICK","QUIET",
-    "RADIO","RAISE","RANGE","RAPID","REACH","READY","RIVER","ROBOT","ROUND","ROYAL",
-    "SCALE","SCENE","SCORE","SENSE","SHAPE","SHARE","SHARP","SHEEP","SHELF","SHIFT",
-    "SHINE","SHIRT","SHOCK","SHORT","SIGHT","SKILL","SLEEP","SMALL","SMART","SMILE",
-    "SMOKE","SOLID","SOUND","SOUTH","SPACE","SPARE","SPEAK","SPEED","SPEND","SPICE",
-    "SPORT","STAFF","STAGE","STAND","START","STEAM","STEEL","STICK","STONE","STORM",
-    "STORY","SUGAR","SWEET","TABLE","TASTE","TEACH","THEME","THICK","THING","THINK",
-    "THREE","TIGER","TIRED","TITLE","TOAST","TODAY","TOOTH","TOTAL","TOUCH","TOWER",
-    "TRACK","TRADE","TRAIN","TREAT","TREND","TRIAL","TRUCK","TRUST","TRUTH","UNCLE",
-    "UNDER","UNION","UNTIL","UPPER","URBAN","USUAL","VALUE","VIDEO","VISIT","VOICE",
-    "WASTE","WATCH","WATER","WHEEL","WHITE","WHOLE","WOMAN","WORLD","WORRY","WORTH",
-    "WOUND","WRITE","WRONG","YOUNG","YOUTH","ZEBRA",
-};
-
 // ---------- Animation timing (ms) ----------
 constexpr float PI = 3.14159265f;
 constexpr int FLIP_MS = 500, FLIP_STAGGER = 300;   // tile reveal
@@ -197,9 +161,12 @@ struct Game {
             for (char& c : w) c = (char)std::toupper((unsigned char)c);
             valid.insert(w);
         }
-        // Answers: common words, but only ones the dictionary accepts.
-        for (const char* w : DEFAULT_WORDS)
-            if (valid.count(w)) answers.emplace_back(w);
+        // Answers: the most common words, and only ones the dictionary accepts.
+        for (size_t i = 0; i < ANSWER_WORDS_COUNT; ++i) {
+            std::string w = ANSWER_WORDS[i];
+            for (char& c : w) c = (char)std::toupper((unsigned char)c);
+            if (valid.count(w)) answers.push_back(w);
+        }
         if (answers.empty()) answers.assign(valid.begin(), valid.end());
     }
 
