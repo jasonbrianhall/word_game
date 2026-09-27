@@ -13,6 +13,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <algorithm>
 #include <random>
 #include <string>
 #include <unordered_set>
@@ -120,6 +121,94 @@ static bool running(Uint32 start, Uint32 dur, Uint32 now, Uint32& t) {
     return t < dur;
 }
 
+// ---------- Sound (synthesized at runtime; no audio files) ----------
+enum Tone { BELL, SOFT, TICK, BUZZ };
+struct Voice { Tone tone; float freq, amp; int delay, pos, len; };
+
+struct Audio {
+    SDL_AudioDeviceID dev = 0;
+    int rate = 44100;
+    std::vector<Voice> voices;  // touched by the audio thread; lock before changing
+    bool muted = false;
+
+    bool init() {
+        SDL_AudioSpec want{}, have{};
+        want.freq = 44100;
+        want.format = AUDIO_F32SYS;
+        want.channels = 1;
+        want.samples = 512;
+        want.callback = [](void* u, Uint8* buf, int bytes) {
+            static_cast<Audio*>(u)->mix(reinterpret_cast<float*>(buf), bytes / (int)sizeof(float));
+        };
+        want.userdata = this;
+        dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);  // SDL converts to the device format
+        if (!dev) return false;
+        rate = have.freq;
+        SDL_PauseAudioDevice(dev, 0);
+        return true;
+    }
+    void shutdown() { if (dev) SDL_CloseAudioDevice(dev); dev = 0; }
+
+    // Schedules a note `delayMs` from now, so sounds line up exactly with the animations.
+    void play(Tone t, float freq, float amp, int delayMs, int lenMs) {
+        if (!dev || muted) return;
+        SDL_LockAudioDevice(dev);
+        voices.push_back({t, freq, amp, delayMs * rate / 1000, 0, lenMs * rate / 1000});
+        SDL_UnlockAudioDevice(dev);
+    }
+    void stopAll() {
+        if (!dev) return;
+        SDL_LockAudioDevice(dev);
+        voices.clear();
+        SDL_UnlockAudioDevice(dev);
+    }
+
+    static float sample(const Voice& v, float t) {
+        float attack = std::min(1.f, t / 0.004f);
+        float w = 2.f * PI * v.freq * t;
+        switch (v.tone) {
+            case BELL:  // bright chime: decaying partials, slightly inharmonic 3rd for shimmer
+                return v.amp * attack * (std::sin(w) * std::exp(-t / 0.5f) +
+                                         0.35f * std::sin(2.f * w) * std::exp(-t / 0.22f) +
+                                         0.12f * std::sin(3.01f * w) * std::exp(-t / 0.1f));
+            case SOFT:  // mellow, rounder tone
+                return v.amp * attack * (std::sin(w) + 0.15f * std::sin(2.f * w)) * std::exp(-t / 0.22f);
+            case TICK: {  // short wooden tap with a quick downward pitch bend
+                float phase = 2.f * PI * v.freq * (t + 0.02f * (1.f - std::exp(-t / 0.01f)));
+                return v.amp * attack * std::sin(phase) * std::exp(-t / 0.035f);
+            }
+            case BUZZ:  // low, soft "nope"
+                return v.amp * attack * (std::sin(w) + std::sin(3.f * w) / 3.f + std::sin(5.f * w) / 5.f) *
+                       std::exp(-t / 0.15f);
+        }
+        return 0.f;
+    }
+
+    void mix(float* out, int n) {
+        int fade = rate / 100;  // 10 ms release so notes never click off
+        for (int i = 0; i < n; ++i) {
+            float acc = 0.f;
+            for (Voice& v : voices) {
+                if (v.delay > 0) { --v.delay; continue; }
+                if (v.pos >= v.len) continue;
+                float rel = std::min(1.f, (v.len - v.pos) / (float)fade);
+                acc += sample(v, v.pos / (float)rate) * rel;
+                ++v.pos;
+            }
+            out[i] = std::tanh(acc) * 0.6f;  // soft-limit so chords never clip
+        }
+        voices.erase(std::remove_if(voices.begin(), voices.end(),
+                                    [](const Voice& v) { return v.delay <= 0 && v.pos >= v.len; }),
+                     voices.end());
+    }
+} g_audio;
+
+// Notes (Hz). Green climbs a C-major pentatonic across the row; yellow uses the octave below.
+static const float GREEN_NOTES[5]  = {523.25f, 587.33f, 659.25f, 783.99f, 880.00f};   // C5 D5 E5 G5 A5
+static const float YELLOW_NOTES[5] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00f};   // C4 D4 E4 G4 A4
+static const float WIN_NOTES[5]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f}; // C5 E5 G5 C6 E6
+static const float LOSE_NOTES[3]   = {392.00f, 311.13f, 261.63f};                     // G4 Eb4 C4
+
 // ---------- Game logic ----------
 struct Game {
     std::vector<std::string> answers;
@@ -171,6 +260,7 @@ struct Game {
     }
 
     void reset() {
+        g_audio.stopAll();
         answer = answers[std::uniform_int_distribution<size_t>(0, answers.size() - 1)(rng)];
         for (auto& g : guesses) g.clear();
         for (auto& m : marks) m.fill(EMPTY);
@@ -184,6 +274,7 @@ struct Game {
         msg = m;
         msgUntil = SDL_GetTicks() + 1500;
         shakeStart = SDL_GetTicks();
+        g_audio.play(BUZZ, 98.f, 0.18f, 0, 220);
     }
 
     void submit() {
@@ -201,6 +292,22 @@ struct Game {
             Mark& k = pendingKeys[cur[i] - 'A'];
             if (res[i] > k) k = res[i];  // GREEN > YELLOW > GRAY
         }
+        // Sounds, timed to each tile's flip midpoint (when its color appears).
+        for (int i = 0; i < 5; ++i) {
+            int at = i * FLIP_STAGGER + FLIP_MS / 2;
+            if (res[i] == GREEN)       g_audio.play(BELL, GREEN_NOTES[i], 0.32f, at, 1200);
+            else if (res[i] == YELLOW) g_audio.play(SOFT, YELLOW_NOTES[i], 0.30f, at, 700);
+            else                       g_audio.play(TICK, 150.f, 0.30f, at, 150);
+        }
+        int end = 4 * FLIP_STAGGER + FLIP_MS;
+        if (cur == answer) {  // rising arpeggio in step with the tile bounce, then a sustained chord
+            for (int i = 0; i < 5; ++i) g_audio.play(BELL, WIN_NOTES[i], 0.26f, end + i * BOUNCE_STAGGER, 1000);
+            for (float f : {523.25f, 659.25f, 783.99f, 1046.50f})
+                g_audio.play(BELL, f, 0.16f, end + 5 * BOUNCE_STAGGER + 100, 2200);
+        } else if (row == 5) {  // last guess missed: gentle descending minor phrase
+            for (int i = 0; i < 3; ++i) g_audio.play(SOFT, LOSE_NOTES[i], 0.28f, end + 200 + i * 260, 900);
+        }
+
         guesses[row] = cur;
         marks[row] = res;
         revealRow = row;
@@ -329,6 +436,8 @@ int main(int, char**) {
     if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);  // fallback
     if (!win || !ren) { SDL_Log("Window/renderer failed: %s", SDL_GetError()); return 1; }
     SDL_RenderSetLogicalSize(ren, WIN_W, WIN_H);
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !g_audio.init())
+        SDL_Log("No audio available, continuing without sound: %s", SDL_GetError());
 
     Game game;
     game.loadWords();
@@ -340,7 +449,12 @@ int main(int, char**) {
             if (e.type == SDL_QUIT) quit = true;
             else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode k = e.key.keysym.sym;
-                if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
+                if (k == SDLK_F1 || (k == SDLK_m && (e.key.keysym.mod & KMOD_CTRL))) {
+                    g_audio.muted = !g_audio.muted;
+                    if (g_audio.muted) g_audio.stopAll();
+                    SDL_SetWindowTitle(win, g_audio.muted ? "Wordle (muted)" : "Wordle");
+                }
+                else if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) game.input('\n');
                 else if (k == SDLK_BACKSPACE) game.input('\b');
                 else if (k == SDLK_ESCAPE) quit = true;
@@ -366,6 +480,7 @@ int main(int, char**) {
         }
     }
 
+    g_audio.shutdown();
     g_text.shutdown();
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
