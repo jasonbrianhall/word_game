@@ -14,6 +14,8 @@
 #include <cctype>
 #include <cmath>
 #include <algorithm>
+#include <ctime>
+#include <fstream>
 #include <random>
 #include <string>
 #include <unordered_set>
@@ -209,6 +211,56 @@ static const float YELLOW_NOTES[5] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00
 static const float WIN_NOTES[5]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f}; // C5 E5 G5 C6 E6
 static const float LOSE_NOTES[3]   = {392.00f, 311.13f, 261.63f};                     // G4 Eb4 C4
 
+// ---------- Statistics (saved in the per-user app data folder) ----------
+struct Stats {
+    int played = 0, wins = 0, curStreak = 0, maxStreak = 0;
+    int dist[6] = {};   // wins by guess number (1-6)
+    int lastGuess = 0;  // guess number of the most recent win, 0 if it was a loss (highlighted bar)
+    std::string dir;    // e.g. ~/.local/share/wordle/ on Linux
+
+    void load() {
+        if (char* p = SDL_GetPrefPath("wordle", "wordle")) { dir = p; SDL_free(p); }
+        std::ifstream f(dir + "stats.txt");
+        std::string key;
+        while (f >> key) {
+            if (key == "played") f >> played;
+            else if (key == "wins") f >> wins;
+            else if (key == "current_streak") f >> curStreak;
+            else if (key == "max_streak") f >> maxStreak;
+            else if (key == "distribution") for (int& d : dist) f >> d;
+            else f.ignore(1 << 20, '\n');
+        }
+    }
+    void save() const {
+        std::ofstream f(dir + "stats.txt");
+        f << "played " << played << "\nwins " << wins << "\ncurrent_streak " << curStreak
+          << "\nmax_streak " << maxStreak << "\ndistribution";
+        for (int d : dist) f << ' ' << d;
+        f << '\n';
+    }
+    // guessNum = 1..6 for a win, 0 for a loss. Also appends the game to history.csv.
+    void record(int guessNum, const std::string& answer) {
+        ++played;
+        lastGuess = guessNum;
+        if (guessNum) {
+            ++wins; ++dist[guessNum - 1];
+            maxStreak = std::max(maxStreak, ++curStreak);
+        } else {
+            curStreak = 0;
+        }
+        save();
+
+        std::string path = dir + "history.csv";
+        bool fresh = !std::ifstream(path).good();
+        std::ofstream h(path, std::ios::app);
+        if (fresh) h << "date,answer,result\n";
+        char date[32];
+        std::time_t now = std::time(nullptr);
+        std::strftime(date, sizeof date, "%Y-%m-%d %H:%M", std::localtime(&now));
+        h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) + "/6" : "X/6") << '\n';
+    }
+} g_stats;
+
 // ---------- Game logic ----------
 struct Game {
     std::vector<std::string> answers;
@@ -220,6 +272,7 @@ struct Game {
     std::array<Mark, 26> keys{};
     int row = 0;
     bool over = false, won = false;
+    bool showStats = false;
     std::string msg;
     Uint32 msgUntil = 0;
 
@@ -266,7 +319,7 @@ struct Game {
         for (auto& m : marks) m.fill(EMPTY);
         keys.fill(EMPTY);
         cur.clear();
-        row = 0; over = won = false; msgUntil = 0;
+        row = 0; over = won = showStats = false; msgUntil = 0;
         revealRow = -1; revealStart = popStart = shakeStart = bounceStart = 0; popCol = -1;
     }
 
@@ -313,14 +366,18 @@ struct Game {
         revealRow = row;
         revealStart = SDL_GetTicks();
         ++row;
-        if (cur == answer) { over = won = true; }
-        else if (row == 6) { over = true; }
+        if (cur == answer) { over = won = true; g_stats.record(row, answer); }
+        else if (row == 6) { over = true; g_stats.record(0, answer); }
         cur.clear();
     }
 
     void input(char c) {
         if (revealRow >= 0) return;  // ignore input while tiles are flipping
-        if (over) { if (c == '\n') reset(); return; }
+        if (showStats && !over) { if (c == '\n') showStats = false; return; }  // opened mid-game with F2
+        if (over) {  // Enter #1: show statistics; Enter #2: new game
+            if (c == '\n') { if (showStats) reset(); else showStats = true; }
+            return;
+        }
         if (c >= 'A' && c <= 'Z') {
             if (cur.size() < 5) { cur += c; popCol = (int)cur.size() - 1; popStart = SDL_GetTicks(); }
         }
@@ -362,6 +419,64 @@ static void drawOutline(SDL_Renderer* r, SDL_Rect rc, SDL_Color c) {
     SDL_RenderDrawRect(r, &rc);
     SDL_Rect in{rc.x + 1, rc.y + 1, rc.w - 2, rc.h - 2};
     SDL_RenderDrawRect(r, &in);
+}
+
+static void drawStats(SDL_Renderer* r, const Game& g) {
+    const Stats& st = g_stats;
+    // Dim everything behind the panel
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
+    SDL_Rect all{0, 0, WIN_W, WIN_H};
+    SDL_RenderFillRect(r, &all);
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+
+    SDL_Rect panel{30, 70, WIN_W - 60, 520};
+    setColor(r, {30, 30, 32, 255});
+    SDL_RenderFillRect(r, &panel);
+    drawOutline(r, panel, BORDER);
+
+    int cx = WIN_W / 2, y = panel.y + 36;
+    if (g.over) {
+        std::string res = g.won ? "SOLVED IN " + std::to_string(g.row) + (g.row == 1 ? " GUESS" : " GUESSES")
+                                : "THE WORD WAS " + g.answer;
+        drawText(r, res, cx, y, 16, g.won ? C_GREEN : WHITE);
+        y += 36;
+    }
+    drawText(r, "STATISTICS", cx, y, 20, WHITE);
+    y += 50;
+
+    // Four headline numbers
+    int winPct = st.played ? (int)std::lround(100.0 * st.wins / st.played) : 0;
+    const int vals[4] = {st.played, winPct, st.curStreak, st.maxStreak};
+    const char* top[4] = {"PLAYED", "WIN %", "CURRENT", "MAX"};
+    const char* bot[4] = {"", "", "STREAK", "STREAK"};
+    int colW = (panel.w - 40) / 4;
+    for (int i = 0; i < 4; ++i) {
+        int x = panel.x + 20 + colW * i + colW / 2;
+        drawText(r, std::to_string(vals[i]), x, y, 30, WHITE);
+        drawText(r, top[i], x, y + 34, 11, WHITE);
+        if (*bot[i]) drawText(r, bot[i], x, y + 50, 11, WHITE);
+    }
+    y += 100;
+
+    drawText(r, "GUESS DISTRIBUTION", cx, y, 15, WHITE);
+    y += 30;
+    int maxD = 1;
+    for (int d : st.dist) maxD = std::max(maxD, d);
+    int barX = panel.x + 60, barMaxW = panel.w - 100, barH = 26;
+    for (int i = 0; i < 6; ++i) {
+        drawText(r, std::to_string(i + 1), panel.x + 40, y + barH / 2, 15, WHITE);
+        int w = std::max(30, barMaxW * st.dist[i] / maxD);
+        SDL_Rect bar{barX, y, w, barH};
+        bool latest = g.over && st.lastGuess == i + 1;
+        setColor(r, latest ? C_GREEN : C_GRAY);
+        SDL_RenderFillRect(r, &bar);
+        drawText(r, std::to_string(st.dist[i]), barX + w - 16, y + barH / 2, 14, WHITE);
+        y += barH + 8;
+    }
+
+    drawText(r, g.over ? "PRESS ENTER TO PLAY AGAIN" : "PRESS ENTER TO CONTINUE",
+             cx, panel.y + panel.h - 26, 15, KEY_DEFAULT);
 }
 
 static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
@@ -408,10 +523,10 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
     }
 
     // Messages
-    if (g.over && g.revealRow < 0) {
+    if (g.over && g.revealRow < 0 && !g.showStats) {
         static const char* praise[6] = {"GENIUS", "MAGNIFICENT", "IMPRESSIVE", "SPLENDID", "GREAT", "PHEW"};
         drawText(r, g.won ? praise[g.row - 1] : "ANSWER " + g.answer, WIN_W / 2, 480, 18, WHITE);
-        drawText(r, "PRESS ENTER TO PLAY AGAIN", WIN_W / 2, 506, 15, KEY_DEFAULT);
+        drawText(r, "PRESS ENTER FOR STATISTICS", WIN_W / 2, 506, 15, KEY_DEFAULT);
     } else if (SDL_GetTicks() < g.msgUntil) {
         drawText(r, g.msg, WIN_W / 2, 490, 18, WHITE);
     }
@@ -423,6 +538,7 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
         SDL_RenderFillRect(r, &k.r);
         drawText(r, k.label, k.r.x + k.r.w / 2, k.r.y + k.r.h / 2, k.label.size() > 1 ? 13 : 20, WHITE);
     }
+    if (g.showStats) drawStats(r, g);
     SDL_RenderPresent(r);
 }
 
@@ -439,6 +555,7 @@ int main(int, char**) {
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !g_audio.init())
         SDL_Log("No audio available, continuing without sound: %s", SDL_GetError());
 
+    g_stats.load();
     Game game;
     game.loadWords();
     game.reset();
@@ -457,7 +574,8 @@ int main(int, char**) {
                 else if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) game.input('\n');
                 else if (k == SDLK_BACKSPACE) game.input('\b');
-                else if (k == SDLK_ESCAPE) quit = true;
+                else if (k == SDLK_F2) { if (game.revealRow < 0) game.showStats = !game.showStats || game.over; }
+                else if (k == SDLK_ESCAPE) { if (game.showStats && !game.over) game.showStats = false; else quit = true; }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 SDL_Point p{e.button.x, e.button.y};
                 for (const Key& k : kb)
