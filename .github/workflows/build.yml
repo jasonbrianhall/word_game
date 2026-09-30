@@ -178,7 +178,7 @@ jobs:
           **Build:** #${{ github.run_number }}
 
           ### 🟩 Wordle
-          Wordle in C++ with SDL2, in four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7.
+          Wordle in C++ with SDL2, in four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7. Stuck? HINT (the button on the left, F3 or ?) lists up to ten answers that fit every guess so far, once per guess.
 
           ### 🪟 Windows (SDL2 + MSVC)
           - **Wordle-Windows-x64.zip** / **Wordle-Windows-arm64.zip** — portable, no installation: unzip and run `wordle.exe`

@@ -43,7 +43,7 @@ typedef int32_t SDL_Keycode;
 enum {
     SDLK_UNKNOWN = 0,
     SDLK_BACKSPACE = 8, SDLK_TAB = 9, SDLK_RETURN = 13, SDLK_ESCAPE = 27,
-    SDLK_SPACE = ' ', SDLK_MINUS = '-',
+    SDLK_SPACE = ' ', SDLK_MINUS = '-', SDLK_SLASH = '/',
     SDLK_0 = '0', SDLK_1, SDLK_2, SDLK_3, SDLK_4, SDLK_5, SDLK_6, SDLK_7, SDLK_8, SDLK_9,
     SDLK_LEFTBRACKET = '[', SDLK_RIGHTBRACKET = ']',
     SDLK_a = 'a', SDLK_b, SDLK_c, SDLK_d, SDLK_e, SDLK_f, SDLK_g, SDLK_h, SDLK_i, SDLK_j,
@@ -123,6 +123,7 @@ void SDL_DestroyWindow(SDL_Window* w);
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* w, int index, Uint32 flags);
 void SDL_DestroyRenderer(SDL_Renderer* r);
 int SDL_RenderSetLogicalSize(SDL_Renderer* r, int w, int h);
+int SDL_RenderSetViewport(SDL_Renderer* r, const SDL_Rect* rect);   // NULL: whole target
 int SDL_SetRenderDrawColor(SDL_Renderer* r, Uint8 red, Uint8 g, Uint8 b, Uint8 a);
 int SDL_SetRenderDrawBlendMode(SDL_Renderer* r, SDL_BlendMode mode);
 int SDL_RenderClear(SDL_Renderer* r);

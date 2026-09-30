@@ -114,16 +114,40 @@ static void fill_px(int x0, int y0, int x1, int y1, uint32_t rgb, uint32_t a) {
 }
 
 // A logical rect in screen pixels (edges rounded, so neighbours tile exactly).
+// SDL_RenderSetViewport: drawing is offset by the viewport's corner and
+// clipped to it (all in logical coordinates, as in SDL).
+static SDL_Rect viewport;
+static bool has_viewport;
+static int clip_x0, clip_y0, clip_x1 = 1 << 30, clip_y1 = 1 << 30;   // screen pixels
+
+// A logical rect in screen pixels (edges rounded, so neighbours tile exactly).
 static void to_screen(const SDL_Rect& r, int& x0, int& y0, int& x1, int& y1) {
-    x0 = view_x + iround(r.x * view_scale);
-    y0 = view_y + iround(r.y * view_scale);
-    x1 = view_x + iround((r.x + r.w) * view_scale);
-    y1 = view_y + iround((r.y + r.h) * view_scale);
+    int ox = has_viewport ? viewport.x : 0, oy = has_viewport ? viewport.y : 0;
+    x0 = view_x + iround((r.x + ox) * view_scale);
+    y0 = view_y + iround((r.y + oy) * view_scale);
+    x1 = view_x + iround((r.x + ox + r.w) * view_scale);
+    y1 = view_y + iround((r.y + oy + r.h) * view_scale);
+}
+static void clip(int& x0, int& y0, int& x1, int& y1) {
+    if (x0 < clip_x0) x0 = clip_x0;
+    if (y0 < clip_y0) y0 = clip_y0;
+    if (x1 > clip_x1) x1 = clip_x1;
+    if (y1 > clip_y1) y1 = clip_y1;
+}
+int SDL_RenderSetViewport(SDL_Renderer*, const SDL_Rect* rect) {
+    has_viewport = rect != nullptr;
+    if (!rect) { clip_x0 = clip_y0 = 0; clip_x1 = clip_y1 = 1 << 30; return 0; }
+    viewport = *rect;
+    has_viewport = false;                              // the clip rect itself isn't offset
+    to_screen(*rect, clip_x0, clip_y0, clip_x1, clip_y1);
+    has_viewport = true;
+    return 0;
 }
 
 static void fill_logical(SDL_Renderer* r, const SDL_Rect& rc) {
     int x0, y0, x1, y1;
     to_screen(rc, x0, y0, x1, y1);
+    clip(x0, y0, x1, y1);
     uint32_t a = r->blend == SDL_BLENDMODE_BLEND ? r->a : 255;
     fill_px(x0, y0, x1, y1, (uint32_t)r->r << 16 | r->g << 8 | r->b, a);
 }
@@ -134,7 +158,11 @@ int SDL_RenderClear(SDL_Renderer* r) {             // the whole screen, like SDL
 }
 int SDL_RenderFillRect(SDL_Renderer* r, const SDL_Rect* rect) {
     if (rect) fill_logical(r, *rect);
-    else { fill_px(0, 0, back_w, back_h, (uint32_t)r->r << 16 | r->g << 8 | r->b, r->blend ? r->a : 255); }
+    else {
+        int x0 = 0, y0 = 0, x1 = back_w, y1 = back_h;
+        clip(x0, y0, x1, y1);
+        fill_px(x0, y0, x1, y1, (uint32_t)r->r << 16 | r->g << 8 | r->b, r->blend ? r->a : 255);
+    }
     return 0;
 }
 int SDL_RenderDrawRect(SDL_Renderer* r, const SDL_Rect* rc) {  // 1 logical pixel wide
@@ -175,11 +203,13 @@ int SDL_RenderCopy(SDL_Renderer*, SDL_Texture* t, const SDL_Rect* src, const SDL
     to_screen(d, x0, y0, x1, y1);
     int dw = x1 - x0, dh = y1 - y0;
     if (dw <= 0 || dh <= 0) return 0;
-    for (int y = y0 > 0 ? y0 : 0; y < y1 && y < (int)back_h; y++) {
+    int cx0 = x0, cy0 = y0, cx1 = x1, cy1 = y1;
+    clip(cx0, cy0, cx1, cy1);
+    for (int y = cy0 > 0 ? cy0 : 0; y < cy1 && y < (int)back_h; y++) {
         int ty = s.y + (int)((int64_t)(y - y0) * s.h / dh);
         const uint32_t* srow = t->px + (size_t)ty * t->w;
         uint32_t* row = back + (size_t)y * back_w;
-        for (int x = x0 > 0 ? x0 : 0; x < x1 && x < (int)back_w; x++) {
+        for (int x = cx0 > 0 ? cx0 : 0; x < cx1 && x < (int)back_w; x++) {
             uint32_t p = srow[s.x + (int)((int64_t)(x - x0) * s.w / dw)];
             uint32_t a = p >> 24;
             if (a == 255) row[x] = p & 0xFFFFFF;
