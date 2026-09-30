@@ -29,6 +29,8 @@ Uint32 SDL_GetTicks(void);
 void SDL_Delay(Uint32 ms);
 char* SDL_GetPrefPath(const char* org, const char* app);
 void SDL_free(void* p);
+#define SDL_HINT_RENDER_SCALE_QUALITY "SDL_RENDER_SCALE_QUALITY"
+static inline SDL_bool SDL_SetHint(const char*, const char*) { return SDL_TRUE; }
 
 // ---------------------------------------------------------------- geometry
 typedef struct SDL_Point { int x, y; } SDL_Point;
@@ -71,6 +73,7 @@ SDL_Keymod SDL_GetModState(void);
 // ---------------------------------------------------------------- events
 enum {
     SDL_QUIT = 0x100,
+    SDL_WINDOWEVENT = 0x200,
     SDL_KEYDOWN = 0x300, SDL_KEYUP,
     SDL_MOUSEMOTION = 0x400, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP,
 };
@@ -83,8 +86,11 @@ typedef struct SDL_Keysym { int scancode; SDL_Keycode sym; Uint16 mod; Uint32 un
 typedef struct SDL_KeyboardEvent { Uint32 type, timestamp, windowID; Uint8 state, repeat, pad2, pad3; SDL_Keysym keysym; } SDL_KeyboardEvent;
 typedef struct SDL_MouseButtonEvent { Uint32 type, timestamp, windowID, which; Uint8 button, state, clicks, pad1; Sint32 x, y; } SDL_MouseButtonEvent;
 typedef struct SDL_MouseMotionEvent { Uint32 type, timestamp, windowID, which, state; Sint32 x, y, xrel, yrel; } SDL_MouseMotionEvent;
+enum { SDL_WINDOWEVENT_SIZE_CHANGED = 6 };
+typedef struct SDL_WindowEvent { Uint32 type, timestamp, windowID; Uint8 event, pad1, pad2, pad3; Sint32 data1, data2; } SDL_WindowEvent;
 typedef union SDL_Event {
     Uint32 type;
+    SDL_WindowEvent window;
     SDL_KeyboardEvent key;
     SDL_MouseButtonEvent button;
     SDL_MouseMotionEvent motion;
@@ -110,6 +116,7 @@ typedef struct SDL_Surface {
 } SDL_Surface;
 typedef enum { SDL_BLENDMODE_NONE = 0, SDL_BLENDMODE_BLEND = 1 } SDL_BlendMode;
 #define SDL_WINDOWPOS_CENTERED 0x2FFF0000u
+#define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001u
 #define SDL_WINDOW_SHOWN            0x00000004u
 #define SDL_WINDOW_RESIZABLE        0x00000020u
 #define SDL_WINDOW_ALLOW_HIGHDPI    0x00002000u
@@ -120,10 +127,21 @@ typedef enum { SDL_BLENDMODE_NONE = 0, SDL_BLENDMODE_BLEND = 1 } SDL_BlendMode;
 SDL_Window* SDL_CreateWindow(const char* title, int x, int y, int w, int h, Uint32 flags);
 void SDL_SetWindowTitle(SDL_Window* w, const char* title);
 void SDL_DestroyWindow(SDL_Window* w);
+// The screen is the window here: always "fullscreen", never resized.
+static inline void SDL_SetWindowMinimumSize(SDL_Window*, int, int) {}
+static inline Uint32 SDL_GetWindowFlags(SDL_Window*) { return SDL_WINDOW_FULLSCREEN_DESKTOP; }
+static inline int SDL_SetWindowFullscreen(SDL_Window*, Uint32) { return 0; }
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* w, int index, Uint32 flags);
 void SDL_DestroyRenderer(SDL_Renderer* r);
 int SDL_RenderSetLogicalSize(SDL_Renderer* r, int w, int h);
+// Reports the logical size, so the game keeps text at the sizes baked into fonts.h.
+int SDL_GetRendererOutputSize(SDL_Renderer* r, int* w, int* h);
 int SDL_RenderSetViewport(SDL_Renderer* r, const SDL_Rect* rect);   // NULL: whole target
+int SDL_GetRendererOutputSize(SDL_Renderer* r, int* w, int* h);
+// No letterbox offset here (sdl.cpp centers the whole view itself).
+static inline void SDL_RenderGetViewport(SDL_Renderer* r, SDL_Rect* rect) {
+    int w = 0, h = 0; SDL_GetRendererOutputSize(r, &w, &h); *rect = SDL_Rect{0, 0, w, h};
+}
 int SDL_SetRenderDrawColor(SDL_Renderer* r, Uint8 red, Uint8 g, Uint8 b, Uint8 a);
 int SDL_SetRenderDrawBlendMode(SDL_Renderer* r, SDL_BlendMode mode);
 int SDL_RenderClear(SDL_Renderer* r);

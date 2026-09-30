@@ -87,6 +87,9 @@ struct TextRenderer {
     std::vector<unsigned char> data;  // must outlive the fonts
     std::map<int, TTF_Font*> fonts;
     std::map<std::tuple<int, std::string, Uint32>, SDL_Texture*> cache;
+    // Output pixels per logical pixel. Text is rasterized at pt * scale and drawn
+    // back at its logical size, so it stays sharp when the window is enlarged.
+    float scale = 1.f;
 
     bool init() {
         data = decodeBase64(DEJAVU_REGULAR_FONT_B64, DEJAVU_REGULAR_FONT_B64_SIZE);
@@ -97,6 +100,10 @@ struct TextRenderer {
         if (!f) f = TTF_OpenFontRW(SDL_RWFromConstMem(data.data(), (int)data.size()), 1, pt);
         return f;
     }
+    void clearCache() {
+        for (auto& kv : cache) SDL_DestroyTexture(kv.second);
+        cache.clear();
+    }
     void shutdown() {
         for (auto& kv : cache) SDL_DestroyTexture(kv.second);
         for (auto& kv : fonts) if (kv.second) TTF_CloseFont(kv.second);
@@ -104,13 +111,24 @@ struct TextRenderer {
     }
 } g_text;
 
+// SDL's logical size letterboxes by offsetting the viewport; setting our own
+// panel viewports would drop that offset, so they're placed relative to it.
+static SDL_Rect g_frame{0, 0, 0, 0};
+static void setView(SDL_Renderer* r, const SDL_Rect* v) {
+    if (!v) { SDL_RenderSetViewport(r, &g_frame); return; }
+    SDL_Rect a{g_frame.x + v->x, g_frame.y + v->y, v->w, v->h};
+    SDL_RenderSetViewport(r, &a);
+}
+
 // Draws text centered at (cx, cy); vertical centering is on the capital letters.
 static void drawText(SDL_Renderer* r, const std::string& s, int cx, int cy, int pt, SDL_Color col,
                      float sx = 1.f, float sy = 1.f) {
     if (s.empty()) return;
-    TTF_Font* f = g_text.font(pt);
+    const float k = g_text.scale;
+    const int rpt = (int)std::lround(pt * k);            // raster size in output pixels
+    TTF_Font* f = g_text.font(rpt);
     if (!f) return;
-    auto key = std::make_tuple(pt, s, (Uint32)(col.r << 16 | col.g << 8 | col.b));
+    auto key = std::make_tuple(rpt, s, (Uint32)(col.r << 16 | col.g << 8 | col.b));
     SDL_Texture*& tex = g_text.cache[key];
     if (!tex) {
         SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s.c_str(), col);
@@ -122,7 +140,12 @@ static void drawText(SDL_Renderer* r, const std::string& s, int cx, int cy, int 
     int w, h, minx, maxx, miny, capH;
     SDL_QueryTexture(tex, nullptr, nullptr, &w, &h);
     TTF_GlyphMetrics(f, 'H', &minx, &maxx, &miny, &capH, nullptr);
-    SDL_Rect dst{cx - w / 2, cy - (TTF_FontAscent(f) - capH / 2), w, h};
+    int asc = TTF_FontAscent(f);
+    if (k != 1.f) {                                      // back to logical units
+        w = (int)std::lround(w / k); h = (int)std::lround(h / k);
+        asc = (int)std::lround(asc / k); capH = (int)std::lround(capH / k);
+    }
+    SDL_Rect dst{cx - w / 2, cy - (asc - capH / 2), w, h};
     if (sx != 1.f || sy != 1.f) {  // scale about (cx, cy)
         dst = {cx + (int)std::lround((dst.x - cx) * sx), cy + (int)std::lround((dst.y - cy) * sy),
                (int)std::lround(w * sx), (int)std::lround(h * sy)};
@@ -682,7 +705,7 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
 
 // The hint panel: a HINT button, then the words it found.
 static void drawHintPanel(SDL_Renderer* r, const Game& g) {
-    SDL_RenderSetViewport(r, &PANEL_VIEW);
+    setView(r, &PANEL_VIEW);
     bool can = g.canHint();
     if (can) { setColor(r, KEY_DEFAULT); SDL_RenderFillRect(r, &HINT_BUTTON); }
     else drawOutline(r, HINT_BUTTON, BORDER);
@@ -703,12 +726,29 @@ static void drawHintPanel(SDL_Renderer* r, const Game& g) {
     SDL_RenderFillRect(r, &line);
 }
 
+// Recomputes the text raster scale from the renderer's real output size
+// (window size times HiDPI factor); SDL letterboxes the logical 680x720 view.
+static void updateTextScale(SDL_Renderer* r) {
+    int ow = 0, oh = 0;
+    if (SDL_GetRendererOutputSize(r, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return;
+    float k = std::min((float)ow / WINDOW_W, (float)oh / WIN_H);
+    k = std::max(0.5f, std::min(k, 4.f));
+    k = std::lround(k * 8) / 8.f;                        // 1/8 steps: fewer font sizes to open
+    if (k != g_text.scale) { g_text.scale = k; g_text.clearCache(); }
+}
+
+static void updateFrame(SDL_Renderer* r) {
+    SDL_RenderSetLogicalSize(r, WINDOW_W, WIN_H);   // recomputes the letterbox viewport
+    SDL_RenderGetViewport(r, &g_frame);
+}
+
+
 static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
-    SDL_RenderSetViewport(r, nullptr);
+    setView(r, nullptr);
     setColor(r, BG);
     SDL_RenderClear(r);
     drawHintPanel(r, g);
-    SDL_RenderSetViewport(r, &GAME_VIEW);                  // the game draws in its own 500 px area
+    setView(r, &GAME_VIEW);                  // the game draws in its own 500 px area
     drawText(r, "LETTERLOCK", WIN_W / 2, 24, 34, WHITE);
     for (int m = 0; m < NUM_MODES; ++m) {
         SDL_Rect tab = tabRect(m);
@@ -776,13 +816,14 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
     }
     if (g.showStats) {
         drawStats(r, g);
-        SDL_RenderSetViewport(r, &PANEL_VIEW);             // dim the hint panel too
+        setView(r, &PANEL_VIEW);             // dim the hint panel too
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
         SDL_Rect all{0, 0, PANEL_W, WIN_H};
         SDL_RenderFillRect(r, &all);
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
     }
+    setView(r, nullptr);   // SDL maps mouse clicks through the current viewport; leave the whole frame
     SDL_RenderPresent(r);
 }
 
@@ -790,12 +831,16 @@ int main(int, char**) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { SDL_Log("SDL_Init failed: %s", SDL_GetError()); return 1; }
     if (TTF_Init() != 0) { SDL_Log("TTF_Init failed: %s", TTF_GetError()); return 1; }
     if (!g_text.init()) { SDL_Log("Failed to decode embedded font"); return 1; }
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");  // smooth, not blocky, when scaled
     SDL_Window* win = SDL_CreateWindow("Letterlock", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       WINDOW_W, WIN_H, SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+                                       WINDOW_W, WIN_H,
+                                       SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);  // fallback
     if (!win || !ren) { SDL_Log("Window/renderer failed: %s", SDL_GetError()); return 1; }
-    SDL_RenderSetLogicalSize(ren, WINDOW_W, WIN_H);
+    SDL_SetWindowMinimumSize(win, WINDOW_W / 2, WIN_H / 2);
+    updateFrame(ren);                                  // resizing scales and letterboxes the game
+    updateTextScale(ren);
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !g_audio.init())
         SDL_Log("No audio available, continuing without sound: %s", SDL_GetError());
 
@@ -808,8 +853,15 @@ int main(int, char**) {
     bool quit = false;
     auto handle = [&](const SDL_Event& e) {
             if (e.type == SDL_QUIT) quit = true;
-            else if (e.type == SDL_KEYDOWN) {
+            else if (e.type == SDL_WINDOWEVENT) {
+                if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) { updateFrame(ren); updateTextScale(ren); }
+            } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode k = e.key.keysym.sym;
+                if (k == SDLK_F11 || (k == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT))) {  // fullscreen
+                    bool full = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                    SDL_SetWindowFullscreen(win, full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                    return;
+                }
                 if (k == SDLK_F1 || (k == SDLK_m && (e.key.keysym.mod & KMOD_CTRL))) {
                     g_audio.muted = !g_audio.muted;
                     if (g_audio.muted) g_audio.stopAll();

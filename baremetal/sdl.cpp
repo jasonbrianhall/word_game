@@ -75,7 +75,14 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window*, int, Uint32) {
 }
 void SDL_DestroyRenderer(SDL_Renderer*) {}
 
+static int logical_w, logical_h;
+int SDL_GetRendererOutputSize(SDL_Renderer*, int* w, int* h) {
+    if (w) *w = logical_w;
+    if (h) *h = logical_h;
+    return logical_w > 0 ? 0 : -1;
+}
 int SDL_RenderSetLogicalSize(SDL_Renderer*, int w, int h) {
+    logical_w = w; logical_h = h;
     float s = (float)back_w / w < (float)back_h / h ? (float)back_w / w : (float)back_h / h;
     if (s >= 1.f) s = (float)(int)s;                   // whole-number scale keeps text crisp
     view_scale = s;
