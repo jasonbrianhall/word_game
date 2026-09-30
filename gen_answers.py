@@ -1,60 +1,90 @@
 #!/usr/bin/env python3
-"""Builds answers.h: the most common 5-letter words, ranked by real-world English
-frequency (wordfreq), restricted to words in linux.words that are also plain
-lowercase entries in a standard spelling dictionary (drops names/foreign words
-that linux.words lists in lowercase, e.g. "mavis", "haydn", "nicht").
+"""Builds answers.h: for each word length 4-7, the most common words, ranked by
+real-world English frequency (wordfreq), restricted to words in linux.words that
+are also plain lowercase entries in a standard spelling dictionary (drops
+names/foreign words that linux.words lists in lowercase, e.g. "mavis", "haydn").
 
-Like NYT, it skips simple plurals (CATS), past tenses (ASKED) and a few offensive words.
+Like NYT, it skips simple inflections (CATS, ASKED, STOPPED, WALKING), Roman
+numerals and offensive words.
 Usage: pip install wordfreq && python3 gen_answers.py [linux.words] [count] [filter-dict] > answers.h
-       filter-dict defaults to /usr/share/dict/american-english (Debian/Ubuntu 'wamerican',
-       Fedora 'hunspell-en-US' users can pass any plain word list).
+       count is per length (default 2000); filter-dict defaults to
+       /usr/share/dict/american-english (Debian/Ubuntu 'wamerican', Fedora
+       'hunspell-en-US' users can pass any plain word list).
 """
 import re
 import sys
 
 from wordfreq import zipf_frequency
 
+LENGTHS = (4, 5, 6, 7)
 path = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/dict/linux.words"
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
 filter_path = sys.argv[3] if len(sys.argv) > 3 else "/usr/share/dict/american-english"
 
 with open(path, encoding="utf-8", errors="ignore") as f:
     all_words = {w.strip() for w in f}
-valid = {w for w in all_words if re.fullmatch(r"[a-z]{5}", w)}
 with open(filter_path, encoding="utf-8", errors="ignore") as f:
     common = {w.strip() for w in f}
-valid &= common
-short = {w for w in all_words | common if re.fullmatch(r"[a-z]{3,4}", w)}
+known = {w for w in all_words | common if re.fullmatch(r"[a-z]+", w)}
 
-BLOCK = {"bitch", "whore", "pussy", "slut", "dicks", "cunts", "fucks", "nigga", "negro",
-         "penis", "sluts", "porno", "horny", "boobs", "tits", "dildo", "rapes", "raped",
-         "rapist", "kikes", "spics", "fagot", "homos", "dykes", "wanks", "shits", "crap",
-         "craps", "semen", "boner", "twats", "prick", "pricks", "coons", "gooks", "honky",
-         "gonna", "wanna", "gotta", "vulva", "lynch", "pubic", "nazis", "anally", "enema"}
+BLOCK = {
+    # 4 letters
+    "fuck", "shit", "cunt", "piss", "dick", "cock", "twat", "slut", "tits", "wank", "spic",
+    "kike", "gook", "coon", "dyke", "homo", "porn", "rape", "anal", "jizz", "damn", "crap",
+    "fags", "turd", "poon", "nazi", "wops",
+    # 5 letters
+    "bitch", "whore", "pussy", "sluts", "dicks", "cunts", "fucks", "nigga", "negro",
+    "penis", "porno", "horny", "boobs", "dildo", "rapes", "raped", "kikes", "spics",
+    "fagot", "homos", "dykes", "wanks", "shits", "craps", "semen", "boner", "twats",
+    "prick", "coons", "gooks", "honky", "gonna", "wanna", "gotta", "vulva", "lynch",
+    "pubic", "nazis", "enema",
+    # 6 letters
+    "rapist", "fucker", "faggot", "nigger", "shitty", "pissed", "retard", "bitchy",
+    "whores", "pricks", "vagina", "penile", "dildos", "hooker", "orgasm", "erotic",
+    "sodomy", "wanker", "boning", "horney", "pisser", "bimbos",
+    # 7 letters
+    "fucking", "asshole", "bastard", "rapists", "fuckers", "faggots", "niggers",
+    "retards", "blowjob", "cumshot", "titties", "boobies", "hookers", "orgasms",
+    "vaginas", "bitches", "whoring", "pissing", "shitter", "wankers",
+    "erotica", "lynched", "lynches",
+}
 ROMAN = re.compile(r"m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})")
 
+
 def inflected(w: str) -> bool:
+    """True for a simple plural, past tense or -ing form of a shorter word."""
+    base = lambda s: len(s) >= 2 and s in known
     if w.endswith("s") and not w.endswith(("ss", "us", "is")):
         # CATS <- CAT, BOXES <- BOX, CITIES <- CITY
-        if w[:-1] in short or (w.endswith("es") and w[:-2] in short) or \
-           (w.endswith("ies") and w[:-3] + "y" in short):
+        if base(w[:-1]) or (w.endswith("es") and base(w[:-2])) or \
+           (w.endswith("ies") and base(w[:-3] + "y")):
             return True
     if w.endswith("ed"):
-        # ASKED <- ASK, TAPED <- TAPE, STOPPED-style doubling is >5 letters anyway
-        if w[:-2] in short or w[:-1] in short:
+        # ASKED <- ASK, TAPED <- TAPE, STOPPED <- STOP, CRIED <- CRY
+        if base(w[:-2]) or base(w[:-1]) or (len(w) > 4 and w[-3] == w[-4] and base(w[:-3])) or \
+           (w.endswith("ied") and base(w[:-3] + "y")):
+            return True
+    if w.endswith("ing") and len(w) >= 6:
+        # WALKING <- WALK, TAKING <- TAKE, STOPPING <- STOP
+        stem = w[:-3]
+        if base(stem) or base(stem + "e") or (len(stem) > 2 and stem[-1] == stem[-2] and base(stem[:-1])):
             return True
     return False
 
-ranked = sorted((w for w in valid if w not in BLOCK and not ROMAN.fullmatch(w) and not inflected(w)),
-                key=lambda w: -zipf_frequency(w, "en"))
-answers = sorted(ranked[:count])
 
-print("// Generated by gen_answers.py -- the most common 5-letter words (wordfreq ranking)")
-print("// that are also in linux.words. Do not edit.")
-print("#ifndef ANSWERS_H\n#define ANSWERS_H\n#include <stddef.h>\n")
-print("static const char* const ANSWER_WORDS[] = {")
-for i in range(0, len(answers), 12):
-    print("    " + " ".join(f'"{w}",' for w in answers[i:i + 12]))
-print("};\n")
-print("static const size_t ANSWER_WORDS_COUNT = sizeof(ANSWER_WORDS) / sizeof(ANSWER_WORDS[0]);")
+print("// Generated by gen_answers.py -- for each length, the most common words (wordfreq")
+print("// ranking) that are also in linux.words. Do not edit.")
+print("#ifndef ANSWERS_H\n#define ANSWERS_H\n#include <stddef.h>")
+for n in LENGTHS:
+    valid = {w for w in all_words if re.fullmatch(rf"[a-z]{{{n}}}", w)} & common
+    ranked = sorted((w for w in valid if w not in BLOCK and not ROMAN.fullmatch(w) and not inflected(w)),
+                    key=lambda w: (-zipf_frequency(w, "en"), w))
+    answers = sorted(ranked[:count])
+    per = 60 // n
+    print(f"\n// {len(answers)} {n}-letter answers, sorted, {n} letters each.")
+    print(f"static const char ANSWER_WORDS_{n}[] =")
+    for i in range(0, len(answers), per):
+        print('    "' + "".join(answers[i:i + per]) + '"')
+    print("    ;")
+    print(f"static const size_t ANSWER_WORDS_{n}_COUNT = (sizeof(ANSWER_WORDS_{n}) - 1) / {n};")
 print("\n#endif // ANSWERS_H")

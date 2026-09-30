@@ -1,6 +1,7 @@
 // Wordle in C++ / SDL2 + SDL_ttf, using the embedded DejaVu Sans Mono font.
-// Guesses are checked against words.h (all 5-letter words in linux.words, from gen_words.sh);
-// answers come from answers.h (the most common of those, from gen_answers.py).
+// Four modes: EASY (4 letters), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
+// Guesses are checked against words.h (all 4- to 7-letter words in linux.words, from gen_words.sh);
+// answers come from answers.h (the ~2000 most common of each length, from gen_answers.py).
 // Build: make   (or: sh gen_words.sh > words.h && g++ -std=c++17 -O2 wordle.cpp -o wordle $(sdl2-config --cflags --libs) -lSDL2_ttf)
 
 #include <SDL2/SDL.h>
@@ -17,11 +18,40 @@
 #include <ctime>
 #include <fstream>
 #include <random>
+#include <cstring>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 enum Mark { EMPTY, PENDING, GRAY, YELLOW, GREEN };
+
+// ---------- Modes ----------
+// Word lists are packed: `count` words of `len` letters back to back, lowercase, sorted.
+struct Mode {
+    const char* name;
+    int len;
+    const char* valid; size_t validCount;
+    const char* answers; size_t answerCount;
+    const char* statsFile;
+};
+static const Mode MODES[] = {
+    {"EASY",   4, VALID_WORDS_4, VALID_WORDS_4_COUNT, ANSWER_WORDS_4, ANSWER_WORDS_4_COUNT, "stats-easy.txt"},
+    {"NORMAL", 5, VALID_WORDS_5, VALID_WORDS_5_COUNT, ANSWER_WORDS_5, ANSWER_WORDS_5_COUNT, "stats.txt"},
+    {"HARD",   6, VALID_WORDS_6, VALID_WORDS_6_COUNT, ANSWER_WORDS_6, ANSWER_WORDS_6_COUNT, "stats-hard.txt"},
+    {"EXPERT", 7, VALID_WORDS_7, VALID_WORDS_7_COUNT, ANSWER_WORDS_7, ANSWER_WORDS_7_COUNT, "stats-expert.txt"},
+};
+constexpr int NUM_MODES = 4, MAX_LEN = 7;
+
+// Binary search of a packed, sorted word list for `w` (lowercase, len letters).
+static bool inList(const char* list, size_t count, int len, const std::string& w) {
+    size_t lo = 0, hi = count;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        int c = std::memcmp(list + mid * len, w.data(), len);
+        if (c == 0) return true;
+        if (c < 0) lo = mid + 1; else hi = mid;
+    }
+    return false;
+}
 
 // ---------- Font ----------
 static std::vector<unsigned char> decodeBase64(const char* in, size_t len) {
@@ -206,21 +236,28 @@ struct Audio {
 } g_audio;
 
 // Notes (Hz). Green climbs a C-major pentatonic across the row; yellow uses the octave below.
-static const float GREEN_NOTES[5]  = {523.25f, 587.33f, 659.25f, 783.99f, 880.00f};   // C5 D5 E5 G5 A5
-static const float YELLOW_NOTES[5] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00f};   // C4 D4 E4 G4 A4
-static const float WIN_NOTES[5]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f}; // C5 E5 G5 C6 E6
+static const float GREEN_NOTES[MAX_LEN]  = {523.25f, 587.33f, 659.25f, 783.99f, 880.00f, 1046.50f, 1174.66f}; // C5 D5 E5 G5 A5 C6 D6
+static const float YELLOW_NOTES[MAX_LEN] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00f, 523.25f, 587.33f};   // C4 D4 E4 G4 A4 C5 D5
+static const float WIN_NOTES[MAX_LEN]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f, 1567.98f, 2093.00f}; // C5 E5 G5 C6 E6 G6 C7
 static const float LOSE_NOTES[3]   = {392.00f, 311.13f, 261.63f};                     // G4 Eb4 C4
 
-// ---------- Statistics (saved in the per-user app data folder) ----------
+// ---------- Statistics (saved in the per-user app data folder, one file per mode) ----------
+static std::string prefDir() {  // e.g. ~/.local/share/wordle/ on Linux
+    static std::string dir;
+    if (dir.empty()) if (char* p = SDL_GetPrefPath("wordle", "wordle")) { dir = p; SDL_free(p); }
+    return dir;
+}
+
 struct Stats {
     int played = 0, wins = 0, curStreak = 0, maxStreak = 0;
     int dist[6] = {};   // wins by guess number (1-6)
     int lastGuess = 0;  // guess number of the most recent win, 0 if it was a loss (highlighted bar)
-    std::string dir;    // e.g. ~/.local/share/wordle/ on Linux
+    std::string dir, file;
 
-    void load() {
-        if (char* p = SDL_GetPrefPath("wordle", "wordle")) { dir = p; SDL_free(p); }
-        std::ifstream f(dir + "stats.txt");
+    void load(const char* fileName) {
+        dir = prefDir();
+        file = fileName;
+        std::ifstream f(dir + file);
         std::string key;
         while (f >> key) {
             if (key == "played") f >> played;
@@ -232,7 +269,7 @@ struct Stats {
         }
     }
     void save() const {
-        std::ofstream f(dir + "stats.txt");
+        std::ofstream f(dir + file);
         f << "played " << played << "\nwins " << wins << "\ncurrent_streak " << curStreak
           << "\nmax_streak " << maxStreak << "\ndistribution";
         for (int d : dist) f << ' ' << d;
@@ -259,16 +296,26 @@ struct Stats {
         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M", std::localtime(&now));
         h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) + "/6" : "X/6") << '\n';
     }
-} g_stats;
+} g_stats[NUM_MODES];
+
+// The last mode played, so the game reopens in it.
+static int loadMode() {
+    std::ifstream f(prefDir() + "mode.txt");
+    int m = 1;
+    if (f >> m && m >= 0 && m < NUM_MODES) return m;
+    return 1;
+}
+static void saveMode(int m) { std::ofstream f(prefDir() + "mode.txt"); f << m << '\n'; }
 
 // ---------- Game logic ----------
 struct Game {
-    std::vector<std::string> answers;
-    std::unordered_set<std::string> valid;
+    std::vector<std::string> answers[NUM_MODES];
+    int mode = 1;                    // index into MODES
+    int len = 5;                     // letters per word in this mode
 
     std::string answer, cur;
     std::array<std::string, 6> guesses;
-    std::array<std::array<Mark, 5>, 6> marks{};
+    std::array<std::array<Mark, MAX_LEN>, 6> marks{};
     std::array<Mark, 26> keys{};
     int row = 0;
     bool over = false, won = false;
@@ -282,7 +329,9 @@ struct Game {
     int popCol = -1;
     std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
 
-    Uint32 revealEnd() const { return revealStart + 4 * FLIP_STAGGER + FLIP_MS; }
+    Uint32 revealEnd() const { return revealStart + (len - 1) * FLIP_STAGGER + FLIP_MS; }
+    Stats& stats() { return g_stats[mode]; }
+    const Stats& stats() const { return g_stats[mode]; }
     void update(Uint32 now) {
         if (revealRow >= 0 && now >= revealEnd()) {
             revealRow = -1;
@@ -293,28 +342,47 @@ struct Game {
     bool animating(Uint32 now) const {
         Uint32 t;
         return revealRow >= 0 || running(popStart, POP_MS, now, t) || running(shakeStart, SHAKE_MS, now, t) ||
-               running(bounceStart, 4 * BOUNCE_STAGGER + BOUNCE_MS, now, t);
+               running(bounceStart, (len - 1) * BOUNCE_STAGGER + BOUNCE_MS, now, t);
     }
     std::mt19937 rng{std::random_device{}()};
 
+    // Answers: the most common words of each length, and only ones the dictionary accepts.
     void loadWords() {
-        for (size_t i = 0; i < VALID_WORDS_COUNT; ++i) {
-            std::string w = VALID_WORDS[i];
-            for (char& c : w) c = (char)std::toupper((unsigned char)c);
-            valid.insert(w);
+        for (int m = 0; m < NUM_MODES; ++m) {
+            const Mode& md = MODES[m];
+            for (size_t i = 0; i < md.answerCount; ++i) {
+                std::string w(md.answers + i * md.len, md.len);
+                if (!inList(md.valid, md.validCount, md.len, w)) continue;
+                for (char& c : w) c = (char)std::toupper((unsigned char)c);
+                answers[m].push_back(w);
+            }
+            if (answers[m].empty())
+                for (size_t i = 0; i < md.validCount; ++i) {
+                    std::string w(md.valid + i * md.len, md.len);
+                    for (char& c : w) c = (char)std::toupper((unsigned char)c);
+                    answers[m].push_back(w);
+                }
         }
-        // Answers: the most common words, and only ones the dictionary accepts.
-        for (size_t i = 0; i < ANSWER_WORDS_COUNT; ++i) {
-            std::string w = ANSWER_WORDS[i];
-            for (char& c : w) c = (char)std::toupper((unsigned char)c);
-            if (valid.count(w)) answers.push_back(w);
-        }
-        if (answers.empty()) answers.assign(valid.begin(), valid.end());
+    }
+    bool isValid(const std::string& w) const {
+        std::string lower = w;
+        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+        return inList(MODES[mode].valid, MODES[mode].validCount, len, lower);
+    }
+
+    // Switch modes; an unfinished game is dropped without counting in the statistics.
+    void setMode(int m) {
+        if (m < 0 || m >= NUM_MODES || revealRow >= 0) return;
+        if (m != mode) saveMode(m);
+        mode = m;
+        len = MODES[m].len;
+        reset();
     }
 
     void reset() {
         g_audio.stopAll();
-        answer = answers[std::uniform_int_distribution<size_t>(0, answers.size() - 1)(rng)];
+        const std::vector<std::string>& list = answers[mode];
+        answer = list[std::uniform_int_distribution<size_t>(0, list.size() - 1)(rng)];
         for (auto& g : guesses) g.clear();
         for (auto& m : marks) m.fill(EMPTY);
         keys.fill(EMPTY);
@@ -331,32 +399,32 @@ struct Game {
     }
 
     void submit() {
-        std::array<Mark, 5> res; res.fill(GRAY);
+        std::array<Mark, MAX_LEN> res; res.fill(GRAY);
         int counts[26] = {};
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < len; ++i) {
             if (cur[i] == answer[i]) res[i] = GREEN;
             else counts[answer[i] - 'A']++;
         }
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < len; ++i)
             if (res[i] != GREEN && counts[cur[i] - 'A'] > 0) { res[i] = YELLOW; counts[cur[i] - 'A']--; }
 
         pendingKeys = keys;
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < len; ++i) {
             Mark& k = pendingKeys[cur[i] - 'A'];
             if (res[i] > k) k = res[i];  // GREEN > YELLOW > GRAY
         }
         // Sounds, timed to each tile's flip midpoint (when its color appears).
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < len; ++i) {
             int at = i * FLIP_STAGGER + FLIP_MS / 2;
             if (res[i] == GREEN)       g_audio.play(BELL, GREEN_NOTES[i], 0.32f, at, 1200);
             else if (res[i] == YELLOW) g_audio.play(SOFT, YELLOW_NOTES[i], 0.30f, at, 700);
             else                       g_audio.play(TICK, 150.f, 0.30f, at, 150);
         }
-        int end = 4 * FLIP_STAGGER + FLIP_MS;
+        int end = (len - 1) * FLIP_STAGGER + FLIP_MS;
         if (cur == answer) {  // rising arpeggio in step with the tile bounce, then a sustained chord
-            for (int i = 0; i < 5; ++i) g_audio.play(BELL, WIN_NOTES[i], 0.26f, end + i * BOUNCE_STAGGER, 1000);
+            for (int i = 0; i < len; ++i) g_audio.play(BELL, WIN_NOTES[i], 0.26f, end + i * BOUNCE_STAGGER, 1000);
             for (float f : {523.25f, 659.25f, 783.99f, 1046.50f})
-                g_audio.play(BELL, f, 0.16f, end + 5 * BOUNCE_STAGGER + 100, 2200);
+                g_audio.play(BELL, f, 0.16f, end + len * BOUNCE_STAGGER + 100, 2200);
         } else if (row == 5) {  // last guess missed: gentle descending minor phrase
             for (int i = 0; i < 3; ++i) g_audio.play(SOFT, LOSE_NOTES[i], 0.28f, end + 200 + i * 260, 900);
         }
@@ -366,8 +434,8 @@ struct Game {
         revealRow = row;
         revealStart = SDL_GetTicks();
         ++row;
-        if (cur == answer) { over = won = true; g_stats.record(row, answer); }
-        else if (row == 6) { over = true; g_stats.record(0, answer); }
+        if (cur == answer) { over = won = true; stats().record(row, answer); }
+        else if (row == 6) { over = true; stats().record(0, answer); }
         cur.clear();
     }
 
@@ -379,12 +447,12 @@ struct Game {
             return;
         }
         if (c >= 'A' && c <= 'Z') {
-            if (cur.size() < 5) { cur += c; popCol = (int)cur.size() - 1; popStart = SDL_GetTicks(); }
+            if ((int)cur.size() < len) { cur += c; popCol = (int)cur.size() - 1; popStart = SDL_GetTicks(); }
         }
         else if (c == '\b') { if (!cur.empty()) cur.pop_back(); }
         else if (c == '\n') {
-            if (cur.size() < 5) flash("NOT ENOUGH LETTERS");
-            else if (!valid.count(cur)) flash("NOT IN WORD LIST");
+            if ((int)cur.size() < len) flash("NOT ENOUGH LETTERS");
+            else if (!isValid(cur)) flash("NOT IN WORD LIST");
             else submit();
         }
     }
@@ -392,8 +460,16 @@ struct Game {
 
 // ---------- Layout ----------
 constexpr int WIN_W = 500, WIN_H = 720;
-constexpr int TILE = 62, GAP = 6;
-constexpr int GRID_X = (WIN_W - (5 * TILE + 4 * GAP)) / 2, GRID_Y = 60;
+constexpr int TILE = 58, GAP = 6;                  // 7 tiles still fit the 500 px window
+constexpr int GRID_Y = 84;
+static int gridX(int len) { return (WIN_W - (len * TILE + (len - 1) * GAP)) / 2; }
+
+// Mode tabs under the title.
+constexpr int TAB_W = 100, TAB_H = 26, TAB_GAP = 8, TAB_Y = 50;
+static SDL_Rect tabRect(int m) {
+    int x0 = (WIN_W - (NUM_MODES * TAB_W + (NUM_MODES - 1) * TAB_GAP)) / 2;
+    return {x0 + m * (TAB_W + TAB_GAP), TAB_Y, TAB_W, TAB_H};
+}
 constexpr int KEY_W = 40, KEY_H = 52, KEY_GAP = 6, WIDE_W = 62, KB_Y = 530;
 
 struct Key { SDL_Rect r; std::string label; char c; };
@@ -422,7 +498,7 @@ static void drawOutline(SDL_Renderer* r, SDL_Rect rc, SDL_Color c) {
 }
 
 static void drawStats(SDL_Renderer* r, const Game& g) {
-    const Stats& st = g_stats;
+    const Stats& st = g.stats();
     // Dim everything behind the panel
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
@@ -442,7 +518,7 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
         drawText(r, res, cx, y, 16, g.won ? C_GREEN : WHITE);
         y += 36;
     }
-    drawText(r, "STATISTICS", cx, y, 20, WHITE);
+    drawText(r, std::string(MODES[g.mode].name) + " STATISTICS", cx, y, 20, WHITE);
     y += 50;
 
     // Four headline numbers
@@ -482,7 +558,13 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
 static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
     setColor(r, BG);
     SDL_RenderClear(r);
-    drawText(r, "WORDLE", WIN_W / 2, 30, 34, WHITE);
+    drawText(r, "WORDLE", WIN_W / 2, 24, 34, WHITE);
+    for (int m = 0; m < NUM_MODES; ++m) {
+        SDL_Rect tab = tabRect(m);
+        if (m == g.mode) { setColor(r, C_GREEN); SDL_RenderFillRect(r, &tab); }
+        else drawOutline(r, tab, BORDER);
+        drawText(r, MODES[m].name, tab.x + tab.w / 2, tab.y + tab.h / 2, 13, m == g.mode ? WHITE : KEY_DEFAULT);
+    }
 
     // Board
     Uint32 now = SDL_GetTicks(), t;
@@ -494,8 +576,8 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
         if (typingRow && running(g.shakeStart, SHAKE_MS, now, t))
             shakeX = (int)(std::sin(t * 0.07f) * 9.f * (1.f - t / (float)SHAKE_MS));
 
-        for (int col = 0; col < 5; ++col) {
-            int cx = GRID_X + col * (TILE + GAP) + TILE / 2 + shakeX;
+        for (int col = 0; col < g.len; ++col) {
+            int cx = gridX(g.len) + col * (TILE + GAP) + TILE / 2 + shakeX;
             int cy = GRID_Y + row * (TILE + GAP) + TILE / 2;
             Mark m = row < g.row ? g.marks[row][col] : (col < (int)s.size() ? PENDING : EMPTY);
             float sx = 1.f, sy = 1.f;
@@ -555,10 +637,10 @@ int main(int, char**) {
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !g_audio.init())
         SDL_Log("No audio available, continuing without sound: %s", SDL_GetError());
 
-    g_stats.load();
+    for (int m = 0; m < NUM_MODES; ++m) g_stats[m].load(MODES[m].statsFile);
     Game game;
     game.loadWords();
-    game.reset();
+    game.setMode(loadMode());
     auto kb = buildKeyboard();
 
     bool quit = false;
@@ -574,24 +656,39 @@ int main(int, char**) {
                 else if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) game.input('\n');
                 else if (k == SDLK_BACKSPACE) game.input('\b');
+                else if (k >= SDLK_4 && k <= SDLK_7) game.setMode((int)(k - SDLK_4));  // 4-7 letters
                 else if (k == SDLK_F2) { if (game.revealRow < 0) game.showStats = !game.showStats || game.over; }
                 else if (k == SDLK_ESCAPE) { if (game.showStats && !game.over) game.showStats = false; else quit = true; }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 SDL_Point p{e.button.x, e.button.y};
+                for (int m = 0; m < NUM_MODES; ++m) {
+                    SDL_Rect tab = tabRect(m);
+                    if (SDL_PointInRect(&p, &tab)) game.setMode(m);
+                }
                 for (const Key& k : kb)
                     if (SDL_PointInRect(&p, &k.r)) { game.input(k.c); break; }
             }
     };
 
+    // Redraw only when something can have changed: an event other than plain
+    // mouse motion (key, click, window exposed...), a running animation, one
+    // more frame after it ends, or the flash message timing out.
+    bool dirty = true, wasAnim = false, msgShown = false;
     while (!quit) {
         Uint32 frameStart = SDL_GetTicks();
         bool anim = game.animating(frameStart);
         SDL_Event e;
         // Idle: sleep until input (or 50 ms, for message timeouts). Animating: run at ~60 fps.
-        if (!anim && SDL_WaitEventTimeout(&e, 50)) handle(e);
-        while (SDL_PollEvent(&e)) handle(e);
+        if (!anim && SDL_WaitEventTimeout(&e, 50)) { handle(e); dirty |= e.type != SDL_MOUSEMOTION; }
+        while (SDL_PollEvent(&e)) { handle(e); dirty |= e.type != SDL_MOUSEMOTION; }
         game.update(SDL_GetTicks());
-        render(ren, game, kb);
+        bool msgNow = SDL_GetTicks() < game.msgUntil;
+        if (dirty || anim || wasAnim || msgNow != msgShown) {
+            render(ren, game, kb);
+            dirty = false;
+        }
+        wasAnim = anim;
+        msgShown = msgNow;
         if (anim) {
             Uint32 el = SDL_GetTicks() - frameStart;
             if (el < 16) SDL_Delay(16 - el);
