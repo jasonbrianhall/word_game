@@ -257,6 +257,9 @@ struct Stats {
     int rows = 6;       // guesses allowed in this mode
     int dist[MAX_ROWS] = {};  // wins by guess number (1..rows)
     int lastGuess = 0;  // guess number of the most recent win, 0 if it was a loss (highlighted bar)
+    // The same for games where a hint was used (a subset of the totals above).
+    int hintPlayed = 0, hintWins = 0, hintDist[MAX_ROWS] = {};
+    bool lastHinted = false;  // the most recent game used a hint
     std::string dir, file;
 
     void load(const char* fileName, int guesses) {
@@ -271,6 +274,9 @@ struct Stats {
             else if (key == "current_streak") f >> curStreak;
             else if (key == "max_streak") f >> maxStreak;
             else if (key == "distribution") for (int i = 0; i < rows; ++i) f >> dist[i];
+            else if (key == "hint_played") f >> hintPlayed;
+            else if (key == "hint_wins") f >> hintWins;
+            else if (key == "hint_distribution") for (int i = 0; i < rows; ++i) f >> hintDist[i];
             else f.ignore(1 << 20, '\n');
         }
     }
@@ -279,14 +285,20 @@ struct Stats {
         f << "played " << played << "\nwins " << wins << "\ncurrent_streak " << curStreak
           << "\nmax_streak " << maxStreak << "\ndistribution";
         for (int i = 0; i < rows; ++i) f << ' ' << dist[i];
+        f << "\nhint_played " << hintPlayed << "\nhint_wins " << hintWins << "\nhint_distribution";
+        for (int i = 0; i < rows; ++i) f << ' ' << hintDist[i];
         f << '\n';
     }
-    // guessNum = 1..rows for a win, 0 for a loss. Also appends the game to history.csv.
-    void record(int guessNum, const std::string& answer) {
+    // guessNum = 1..rows for a win, 0 for a loss; hints = hints used in that game.
+    // Also appends the game to history.csv.
+    void record(int guessNum, const std::string& answer, int hints) {
         ++played;
         lastGuess = guessNum;
+        lastHinted = hints > 0;
+        if (lastHinted) ++hintPlayed;
         if (guessNum) {
             ++wins; ++dist[guessNum - 1];
+            if (lastHinted) { ++hintWins; ++hintDist[guessNum - 1]; }
             maxStreak = std::max(maxStreak, ++curStreak);
         } else {
             curStreak = 0;
@@ -296,11 +308,12 @@ struct Stats {
         std::string path = dir + "history.csv";
         bool fresh = !std::ifstream(path).good();
         std::ofstream h(path, std::ios::app);
-        if (fresh) h << "date,answer,result\n";
+        if (fresh) h << "date,answer,result,hints\n";   // older files keep their 3-column header
         char date[32];
         std::time_t now = std::time(nullptr);
         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M", std::localtime(&now));
-        h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) : std::string("X")) + "/" + std::to_string(rows) << '\n';
+        h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) : std::string("X")) + "/" + std::to_string(rows)
+          << ',' << hints << '\n';
     }
 } g_stats[NUM_MODES];
 
@@ -353,6 +366,7 @@ struct Game {
     std::vector<std::string> hint;   // shown on the left, sorted
     int hintCount = 0;               // how many words fit (hint may show a sample)
     int hintRow = -1;                // row the current hint was asked on; -1 = none
+    int hintsUsed = 0;               // hints asked for this game (recorded in the statistics)
     std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
 
     Uint32 revealEnd() const { return revealStart + (len - 1) * FLIP_STAGGER + FLIP_MS; }
@@ -415,7 +429,7 @@ struct Game {
         keys.fill(EMPTY);
         cur.clear();
         row = 0; over = won = showStats = false; msgUntil = 0;
-        hint.clear(); hintCount = 0; hintRow = -1;
+        hint.clear(); hintCount = 0; hintRow = -1; hintsUsed = 0;
         revealRow = -1; revealStart = popStart = shakeStart = bounceStart = 0; popCol = -1;
     }
 
@@ -444,6 +458,7 @@ struct Game {
         hint.assign(fits.begin(), fits.begin() + std::min<size_t>(fits.size(), HINT_MAX));
         std::sort(hint.begin(), hint.end());
         hintRow = row;
+        ++hintsUsed;
         g_audio.play(SOFT, 659.25f, 0.18f, 0, 250);
     }
 
@@ -483,8 +498,8 @@ struct Game {
         revealRow = row;
         revealStart = SDL_GetTicks();
         ++row;
-        if (cur == answer) { over = won = true; stats().record(row, answer); }
-        else if (row == rows) { over = true; stats().record(0, answer); }
+        if (cur == answer) { over = won = true; stats().record(row, answer, hintsUsed); }
+        else if (row == rows) { over = true; stats().record(0, answer, hintsUsed); }
         cur.clear();
     }
 
@@ -564,7 +579,7 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
     SDL_RenderFillRect(r, &all);
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
 
-    SDL_Rect panel{30, 70, WIN_W - 60, 520};
+    SDL_Rect panel{30, 64, WIN_W - 60, 560};
     setColor(r, {30, 30, 32, 255});
     SDL_RenderFillRect(r, &panel);
     drawOutline(r, panel, BORDER);
@@ -573,7 +588,9 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
     if (g.over) {
         std::string res = g.won ? "SOLVED IN " + std::to_string(g.row) + (g.row == 1 ? " GUESS" : " GUESSES")
                                 : "THE WORD WAS " + g.answer;
-        drawText(r, res, cx, y, 16, g.won ? C_GREEN : WHITE);
+        if (g.won && g.hintsUsed)
+            res += " WITH " + std::to_string(g.hintsUsed) + (g.hintsUsed == 1 ? " HINT" : " HINTS");
+        drawText(r, res, cx, y, 16, !g.won ? WHITE : g.hintsUsed ? C_YELLOW : C_GREEN);
         y += 36;
     }
     drawText(r, std::string(MODES[g.mode].name) + " STATISTICS", cx, y, 20, WHITE);
@@ -591,7 +608,15 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
         drawText(r, top[i], x, y + 34, 11, WHITE);
         if (*bot[i]) drawText(r, bot[i], x, y + 50, 11, WHITE);
     }
-    y += 100;
+    y += 84;
+
+    // Games won without and with hints (hinted games show in yellow below).
+    int plain = st.played - st.hintPlayed, plainWins = st.wins - st.hintWins;
+    drawText(r, "NO HINTS: " + std::to_string(plainWins) + " OF " + std::to_string(plain) + " WON",
+             panel.x + panel.w / 4, y, 13, WHITE);
+    drawText(r, "HINTS: " + std::to_string(st.hintWins) + " OF " + std::to_string(st.hintPlayed) + " WON",
+             panel.x + panel.w * 3 / 4, y, 13, C_YELLOW);
+    y += 40;
 
     drawText(r, "GUESS DISTRIBUTION", cx, y, 15, WHITE);
     y += 30;
@@ -601,10 +626,13 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
     for (int i = 0; i < st.rows; ++i) {
         drawText(r, std::to_string(i + 1), panel.x + 40, y + barH / 2, 15, WHITE);
         int w = std::max(30, barMaxW * st.dist[i] / maxD);
-        SDL_Rect bar{barX, y, w, barH};
+        int hw = st.dist[i] ? w * st.hintDist[i] / st.dist[i] : 0;   // hinted wins, drawn at the end
+        SDL_Rect bar{barX, y, w - hw, barH}, hbar{barX + w - hw, y, hw, barH};
         bool latest = g.over && st.lastGuess == i + 1;
-        setColor(r, latest ? C_GREEN : C_GRAY);
+        setColor(r, latest && !st.lastHinted ? C_GREEN : C_GRAY);
         SDL_RenderFillRect(r, &bar);
+        setColor(r, latest && st.lastHinted ? C_YELLOW : SDL_Color{120, 106, 40, 255});
+        SDL_RenderFillRect(r, &hbar);
         drawText(r, std::to_string(st.dist[i]), barX + w - 16, y + barH / 2, 14, WHITE);
         y += barH + (st.rows > 6 ? 6 : 8);
     }
