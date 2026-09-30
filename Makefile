@@ -6,14 +6,16 @@ WORDLIST ?= /usr/share/dict/linux.words
 wordle: wordle.cpp words.h answers.h DejaVuMono.h
 	$(CXX) $(CXXFLAGS) wordle.cpp -o $@ $(LIBS)
 
-words.h: gen_words.sh
-	sh gen_words.sh $(WORDLIST) > $@.tmp && mv $@.tmp $@
+# words.h and answers.h ship pre-built, so a plain build (and CI) never needs the
+# word list. Regenerate with:  make words     (needs the 'words' package)
+#                              make answers   (also needs: pip install wordfreq)
+words:
+	sh gen_words.sh $(WORDLIST) > words.h.tmp && mv words.h.tmp words.h
 
-# answers.h ships pre-built; regenerate with: make answers  (needs: pip install wordfreq)
 answers:
 	python3 gen_answers.py $(WORDLIST) > answers.h.tmp && mv answers.h.tmp answers.h
 
 clean:
-	rm -f wordle words.h words.h.tmp
+	rm -f wordle words.h.tmp answers.h.tmp
 
-.PHONY: clean answers
+.PHONY: clean words answers

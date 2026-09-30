@@ -1,0 +1,192 @@
+name: Build and Release Wordle (Windows + Linux + Boot Floppy)
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hpp'
+      - '**.c'
+      - '**.S'
+      - '**.ld'
+      - '**.py'
+      - '**.sh'
+      - '**.cfg'
+      - '**/Makefile'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - '.github/workflows/**'
+  pull_request:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+
+env:
+  PRODUCT_VERSION: "1.0.${{ github.run_number }}.0"
+
+jobs:
+  # ------------------------------------------------------------ Windows (MSVC)
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            cmake_arch: x64
+            triplet: x64-windows
+          - name: arm64
+            cmake_arch: ARM64
+            triplet: arm64-windows
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Bootstrap vcpkg
+      run: |
+        git clone --branch 2026.07.29 --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
+        C:\vcpkg\bootstrap-vcpkg.bat
+        echo "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "VCPKG_BINARY_SOURCES=clear;files,C:\vcpkg_bincache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: C:\vcpkg_bincache
+        key: vcpkg-bincache-wordle-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-bincache-wordle-${{ matrix.triplet }}-
+
+    - name: Install Dependencies (vcpkg)
+      run: |
+        C:\vcpkg\vcpkg.exe install --triplet ${{ matrix.triplet }} --x-install-root=C:\vcpkg\installed
+
+    - name: Save vcpkg binary cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: C:\vcpkg_bincache
+        key: vcpkg-bincache-wordle-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+
+    - name: Configure (CMake, MSVC)
+      run: |
+        cmake -S . -B build -A ${{ matrix.cmake_arch }} -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DVCPKG_INSTALLED_DIR=C:\vcpkg\installed -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: |
+        cmake --build build --config Release --parallel
+
+    - name: Package
+      working-directory: build\Release
+      run: |
+        if (-not (Test-Path "wordle.exe")) { Write-Error "wordle.exe not found!"; exit 1 }
+        Copy-Item "C:\vcpkg\installed\${{ matrix.triplet }}\bin\*.dll" . -ErrorAction SilentlyContinue
+        Copy-Item ..\..\README.md . -ErrorAction SilentlyContinue
+        Write-Host "Package contents:"
+        Get-ChildItem *.exe, *.dll | Format-Table Name, Length
+        Compress-Archive -Path *.exe, *.dll -DestinationPath ..\..\Wordle-Windows-${{ matrix.name }}.zip -Force
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Wordle-Windows-${{ matrix.name }}
+        path: Wordle-Windows-${{ matrix.name }}.zip
+        retention-days: 7
+
+  # ------------------------------------------------------------ Linux (build check)
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libsdl2-dev libsdl2-ttf-dev
+
+    - name: Build
+      run: make wordle
+
+  # ------------------------------------------------------------ Boot floppy
+  build-booter:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential grub-pc-bin grub-common
+
+    - name: Build Boot Floppy
+      working-directory: baremetal
+      run: |
+        make -j"$(nproc)" wordle.elf
+        make floppy
+        cp wordle-floppy.img ../Wordle-Booter-Floppy.img
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Wordle-Booter-Floppy.img
+        path: Wordle-Booter-Floppy.img
+        retention-days: 7
+
+  # ------------------------------------------------------------ Release
+  create-release:
+    needs: [build-windows, build-linux, build-booter]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.event_name == 'push'
+
+    steps:
+    - name: Download Windows Builds
+      uses: actions/download-artifact@v4
+      with:
+        pattern: Wordle-Windows-*
+        path: release
+        merge-multiple: true
+
+    - name: Download Boot Floppy
+      uses: actions/download-artifact@v4
+      with:
+        name: Wordle-Booter-Floppy.img
+        path: release
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          release/Wordle-Windows-x64.zip
+          release/Wordle-Windows-arm64.zip
+          release/Wordle-Booter-Floppy.img
+        tag_name: ${{ github.ref == 'refs/heads/main' && format('v{0}', github.run_number) || format('dev-v{0}', github.run_number) }}
+        name: ${{ github.ref == 'refs/heads/main' && format('Release v{0}', github.run_number) || format('Dev Build v{0}', github.run_number) }}
+        draft: false
+        prerelease: ${{ github.ref != 'refs/heads/main' }}
+        make_latest: ${{ github.ref == 'refs/heads/main' }}
+        body: |
+          ## ${{ github.ref == 'refs/heads/main' && 'Stable Release' || 'Development Build' }}
+
+          **Version:** ${{ env.PRODUCT_VERSION }}
+          **Commit:** ${{ github.sha }}
+          **Build:** #${{ github.run_number }}
+
+          ### 🟩 Wordle
+          Wordle in C++ with SDL2, in four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7.
+
+          ### 🪟 Windows (SDL2 + MSVC)
+          - **Wordle-Windows-x64.zip** / **Wordle-Windows-arm64.zip** — portable, no installation: unzip and run `wordle.exe`
+
+          ### 💾 Booter Edition (bare metal, for virtual machines)
+          - **Wordle-Booter-Floppy.img** — 1.44 MB boot floppy that starts straight into the game with no operating system
+
+          Attach it as a virtual machine's floppy drive and boot from it, e.g. `qemu-system-x86_64 -m 64 -fda Wordle-Booter-Floppy.img -boot a -audiodev pa,id=snd0 -device intel-hda -device hda-output,audiodev=snd0`, or add a floppy controller in VirtualBox. Tested in QEMU and VirtualBox with Intel HD Audio or AC97 sound and a PS/2 or USB keyboard and mouse (in VirtualBox, click inside the window to capture the mouse). **Not yet tested on real hardware.** Needs a 64-bit (x86-64) CPU and at least 16 MB of RAM. Statistics are kept only until reboot; Esc quits, then Enter plays again or Esc reboots.
+
+          ---
+          *Built with ❤️ using GitHub Actions*
