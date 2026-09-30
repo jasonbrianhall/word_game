@@ -1,5 +1,6 @@
 // Wordle in C++ / SDL2 + SDL_ttf, using the embedded DejaVu Sans Mono font.
-// Four modes: EASY (4 letters), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
+// Four modes: EASY (4 letters, eight guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
+// Four-letter words give fewer clues per guess, so EASY gets two extra guesses.
 // Guesses are checked against words.h (all 4- to 7-letter words in linux.words, from gen_words.sh);
 // answers come from answers.h (the ~2000 most common of each length, from gen_answers.py).
 // Build: make   (or: sh gen_words.sh > words.h && g++ -std=c++17 -O2 wordle.cpp -o wordle $(sdl2-config --cflags --libs) -lSDL2_ttf)
@@ -29,17 +30,18 @@ enum Mark { EMPTY, PENDING, GRAY, YELLOW, GREEN };
 struct Mode {
     const char* name;
     int len;
+    int rows;                        // guesses allowed
     const char* valid; size_t validCount;
     const char* answers; size_t answerCount;
     const char* statsFile;
 };
 static const Mode MODES[] = {
-    {"EASY",   4, VALID_WORDS_4, VALID_WORDS_4_COUNT, ANSWER_WORDS_4, ANSWER_WORDS_4_COUNT, "stats-easy.txt"},
-    {"NORMAL", 5, VALID_WORDS_5, VALID_WORDS_5_COUNT, ANSWER_WORDS_5, ANSWER_WORDS_5_COUNT, "stats.txt"},
-    {"HARD",   6, VALID_WORDS_6, VALID_WORDS_6_COUNT, ANSWER_WORDS_6, ANSWER_WORDS_6_COUNT, "stats-hard.txt"},
-    {"EXPERT", 7, VALID_WORDS_7, VALID_WORDS_7_COUNT, ANSWER_WORDS_7, ANSWER_WORDS_7_COUNT, "stats-expert.txt"},
+    {"EASY",   4, 8, VALID_WORDS_4, VALID_WORDS_4_COUNT, ANSWER_WORDS_4, ANSWER_WORDS_4_COUNT, "stats-easy.txt"},
+    {"NORMAL", 5, 6, VALID_WORDS_5, VALID_WORDS_5_COUNT, ANSWER_WORDS_5, ANSWER_WORDS_5_COUNT, "stats.txt"},
+    {"HARD",   6, 6, VALID_WORDS_6, VALID_WORDS_6_COUNT, ANSWER_WORDS_6, ANSWER_WORDS_6_COUNT, "stats-hard.txt"},
+    {"EXPERT", 7, 6, VALID_WORDS_7, VALID_WORDS_7_COUNT, ANSWER_WORDS_7, ANSWER_WORDS_7_COUNT, "stats-expert.txt"},
 };
-constexpr int NUM_MODES = 4, MAX_LEN = 7;
+constexpr int NUM_MODES = 4, MAX_LEN = 7, MAX_ROWS = 8;
 
 // Binary search of a packed, sorted word list for `w` (lowercase, len letters).
 static bool inList(const char* list, size_t count, int len, const std::string& w) {
@@ -250,13 +252,15 @@ static std::string prefDir() {  // e.g. ~/.local/share/wordle/ on Linux
 
 struct Stats {
     int played = 0, wins = 0, curStreak = 0, maxStreak = 0;
-    int dist[6] = {};   // wins by guess number (1-6)
+    int rows = 6;       // guesses allowed in this mode
+    int dist[MAX_ROWS] = {};  // wins by guess number (1..rows)
     int lastGuess = 0;  // guess number of the most recent win, 0 if it was a loss (highlighted bar)
     std::string dir, file;
 
-    void load(const char* fileName) {
+    void load(const char* fileName, int guesses) {
         dir = prefDir();
         file = fileName;
+        rows = guesses;
         std::ifstream f(dir + file);
         std::string key;
         while (f >> key) {
@@ -264,7 +268,7 @@ struct Stats {
             else if (key == "wins") f >> wins;
             else if (key == "current_streak") f >> curStreak;
             else if (key == "max_streak") f >> maxStreak;
-            else if (key == "distribution") for (int& d : dist) f >> d;
+            else if (key == "distribution") for (int i = 0; i < rows; ++i) f >> dist[i];
             else f.ignore(1 << 20, '\n');
         }
     }
@@ -272,10 +276,10 @@ struct Stats {
         std::ofstream f(dir + file);
         f << "played " << played << "\nwins " << wins << "\ncurrent_streak " << curStreak
           << "\nmax_streak " << maxStreak << "\ndistribution";
-        for (int d : dist) f << ' ' << d;
+        for (int i = 0; i < rows; ++i) f << ' ' << dist[i];
         f << '\n';
     }
-    // guessNum = 1..6 for a win, 0 for a loss. Also appends the game to history.csv.
+    // guessNum = 1..rows for a win, 0 for a loss. Also appends the game to history.csv.
     void record(int guessNum, const std::string& answer) {
         ++played;
         lastGuess = guessNum;
@@ -294,7 +298,7 @@ struct Stats {
         char date[32];
         std::time_t now = std::time(nullptr);
         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M", std::localtime(&now));
-        h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) + "/6" : "X/6") << '\n';
+        h << date << ',' << answer << ',' << (guessNum ? std::to_string(guessNum) : std::string("X")) + "/" + std::to_string(rows) << '\n';
     }
 } g_stats[NUM_MODES];
 
@@ -312,10 +316,11 @@ struct Game {
     std::vector<std::string> answers[NUM_MODES];
     int mode = 1;                    // index into MODES
     int len = 5;                     // letters per word in this mode
+    int rows = 6;                    // guesses allowed in this mode
 
     std::string answer, cur;
-    std::array<std::string, 6> guesses;
-    std::array<std::array<Mark, MAX_LEN>, 6> marks{};
+    std::array<std::string, MAX_ROWS> guesses;
+    std::array<std::array<Mark, MAX_LEN>, MAX_ROWS> marks{};
     std::array<Mark, 26> keys{};
     int row = 0;
     bool over = false, won = false;
@@ -376,6 +381,7 @@ struct Game {
         if (m != mode) saveMode(m);
         mode = m;
         len = MODES[m].len;
+        rows = MODES[m].rows;
         reset();
     }
 
@@ -425,7 +431,7 @@ struct Game {
             for (int i = 0; i < len; ++i) g_audio.play(BELL, WIN_NOTES[i], 0.26f, end + i * BOUNCE_STAGGER, 1000);
             for (float f : {523.25f, 659.25f, 783.99f, 1046.50f})
                 g_audio.play(BELL, f, 0.16f, end + len * BOUNCE_STAGGER + 100, 2200);
-        } else if (row == 5) {  // last guess missed: gentle descending minor phrase
+        } else if (row == rows - 1) {  // last guess missed: gentle descending minor phrase
             for (int i = 0; i < 3; ++i) g_audio.play(SOFT, LOSE_NOTES[i], 0.28f, end + 200 + i * 260, 900);
         }
 
@@ -435,7 +441,7 @@ struct Game {
         revealStart = SDL_GetTicks();
         ++row;
         if (cur == answer) { over = won = true; stats().record(row, answer); }
-        else if (row == 6) { over = true; stats().record(0, answer); }
+        else if (row == rows) { over = true; stats().record(0, answer); }
         cur.clear();
     }
 
@@ -460,9 +466,14 @@ struct Game {
 
 // ---------- Layout ----------
 constexpr int WIN_W = 500, WIN_H = 720;
-constexpr int TILE = 58, GAP = 6;                  // 7 tiles still fit the 500 px window
-constexpr int GRID_Y = 84;
-static int gridX(int len) { return (WIN_W - (len * TILE + (len - 1) * GAP)) / 2; }
+constexpr int GAP = 6, GRID_Y = 84, GRID_BOTTOM = 466;   // the board sits above the messages
+// Tile size: 58 px for six rows (7 tiles still fit the 500 px window), smaller
+// when EASY's eight rows have to fit in the same height.
+static int tileSize(int rows) {
+    int t = (GRID_BOTTOM - GRID_Y - (rows - 1) * GAP) / rows;
+    return t < 58 ? t : 58;
+}
+static int gridX(int len, int tile) { return (WIN_W - (len * tile + (len - 1) * GAP)) / 2; }
 
 // Mode tabs under the title.
 constexpr int TAB_W = 100, TAB_H = 26, TAB_GAP = 8, TAB_Y = 50;
@@ -539,8 +550,8 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
     y += 30;
     int maxD = 1;
     for (int d : st.dist) maxD = std::max(maxD, d);
-    int barX = panel.x + 60, barMaxW = panel.w - 100, barH = 26;
-    for (int i = 0; i < 6; ++i) {
+    int barX = panel.x + 60, barMaxW = panel.w - 100, barH = st.rows > 6 ? 20 : 26;
+    for (int i = 0; i < st.rows; ++i) {
         drawText(r, std::to_string(i + 1), panel.x + 40, y + barH / 2, 15, WHITE);
         int w = std::max(30, barMaxW * st.dist[i] / maxD);
         SDL_Rect bar{barX, y, w, barH};
@@ -548,7 +559,7 @@ static void drawStats(SDL_Renderer* r, const Game& g) {
         setColor(r, latest ? C_GREEN : C_GRAY);
         SDL_RenderFillRect(r, &bar);
         drawText(r, std::to_string(st.dist[i]), barX + w - 16, y + barH / 2, 14, WHITE);
-        y += barH + 8;
+        y += barH + (st.rows > 6 ? 6 : 8);
     }
 
     drawText(r, g.over ? "PRESS ENTER TO PLAY AGAIN" : "PRESS ENTER TO CONTINUE",
@@ -568,7 +579,8 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
 
     // Board
     Uint32 now = SDL_GetTicks(), t;
-    for (int row = 0; row < 6; ++row) {
+    const int TILE = tileSize(g.rows), letterPt = TILE >= 58 ? 36 : 30;
+    for (int row = 0; row < g.rows; ++row) {
         bool typingRow = row == g.row && !g.over;
         std::string s = row < g.row ? g.guesses[row] : (typingRow ? g.cur : "");
 
@@ -577,7 +589,7 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
             shakeX = (int)(std::sin(t * 0.07f) * 9.f * (1.f - t / (float)SHAKE_MS));
 
         for (int col = 0; col < g.len; ++col) {
-            int cx = gridX(g.len) + col * (TILE + GAP) + TILE / 2 + shakeX;
+            int cx = gridX(g.len, TILE) + col * (TILE + GAP) + TILE / 2 + shakeX;
             int cy = GRID_Y + row * (TILE + GAP) + TILE / 2;
             Mark m = row < g.row ? g.marks[row][col] : (col < (int)s.size() ? PENDING : EMPTY);
             float sx = 1.f, sy = 1.f;
@@ -600,14 +612,16 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
             if (m == EMPTY || m == PENDING) drawOutline(r, rc, m == PENDING ? BORDER_ACTIVE : BORDER);
             else { setColor(r, markColor(m)); SDL_RenderFillRect(r, &rc); }
             if (col < (int)s.size())
-                drawText(r, std::string(1, s[col]), cx, cy, 36, WHITE, sx, sy);
+                drawText(r, std::string(1, s[col]), cx, cy, letterPt, WHITE, sx, sy);
         }
     }
 
     // Messages
     if (g.over && g.revealRow < 0 && !g.showStats) {
-        static const char* praise[6] = {"GENIUS", "MAGNIFICENT", "IMPRESSIVE", "SPLENDID", "GREAT", "PHEW"};
-        drawText(r, g.won ? praise[g.row - 1] : "ANSWER " + g.answer, WIN_W / 2, 480, 18, WHITE);
+        static const char* praise6[6] = {"GENIUS", "MAGNIFICENT", "IMPRESSIVE", "SPLENDID", "GREAT", "PHEW"};
+        static const char* praise8[8] = {"GENIUS", "MAGNIFICENT", "IMPRESSIVE", "SPLENDID", "GREAT", "NICE",
+                                         "CLOSE ONE", "PHEW"};
+        drawText(r, g.won ? (g.rows > 6 ? praise8 : praise6)[g.row - 1] : "ANSWER " + g.answer, WIN_W / 2, 480, 18, WHITE);
         drawText(r, "PRESS ENTER FOR STATISTICS", WIN_W / 2, 506, 15, KEY_DEFAULT);
     } else if (SDL_GetTicks() < g.msgUntil) {
         drawText(r, g.msg, WIN_W / 2, 490, 18, WHITE);
@@ -637,7 +651,7 @@ int main(int, char**) {
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !g_audio.init())
         SDL_Log("No audio available, continuing without sound: %s", SDL_GetError());
 
-    for (int m = 0; m < NUM_MODES; ++m) g_stats[m].load(MODES[m].statsFile);
+    for (int m = 0; m < NUM_MODES; ++m) g_stats[m].load(MODES[m].statsFile, MODES[m].rows);
     Game game;
     game.loadWords();
     game.setMode(loadMode());
