@@ -417,7 +417,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential grub-pc-bin grub-common
+        sudo apt-get install -y build-essential grub-pc-bin grub-common mtools dosfstools
 
     - name: Build Boot Floppy
       working-directory: baremetal

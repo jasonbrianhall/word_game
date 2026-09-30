@@ -22,6 +22,7 @@ BUILD    ?= build/x86_64
 GRUB_MKIMAGE  ?= $(shell command -v grub2-mkimage || command -v grub-mkimage)
 GRUB_MKRESCUE ?= $(shell command -v grub2-mkrescue || command -v grub-mkrescue)
 GRUB_I386     ?= $(firstword $(wildcard /usr/lib/grub/i386-pc /usr/lib/grub2/i386-pc))
+MKFS_FAT      ?= $(shell command -v mkfs.fat || command -v mkfs.vfat || echo /usr/sbin/mkfs.fat)
 
 # PIE=1 builds the position-independent kernel that letterlock.efi embeds.
 ifeq ($(PIE),1)
@@ -147,18 +148,23 @@ $(ISO): $(KERNEL) grub.cfg
 floppy: $(FLOPPY)
 $(FLOPPY): $(KERNEL) grub.cfg
 	@grep -q "multiboot /boot/$(KERNEL)" grub.cfg || { echo "grub.cfg doesn't boot /boot/$(KERNEL); update it (or check it in)"; exit 1; }
-	@rm -rf $(BUILD)/fd && mkdir -p $(BUILD)/fd/boot/grub
-	cp $(KERNEL) $(BUILD)/fd/boot/letterlock.elf
-	cp grub.cfg $(BUILD)/fd/boot/grub/grub.cfg
-	tar -C $(BUILD)/fd -cf $(BUILD)/memdisk.tar boot
-	@# GRUB loads its core image (modules + this compressed memdisk) below
-	@# 640 KB, so it must stay under 480 KB, well before the floppy is full.
-	$(GRUB_MKIMAGE) -O i386-pc -o $(BUILD)/core.img -p '(memdisk)/boot/grub' \
-	    -m $(BUILD)/memdisk.tar memdisk tar normal configfile multiboot vbe video video_fb boot \
-	    || { echo "$@: the kernel no longer fits GRUB's 480 KB floppy core image; use 'make iso' or shrink words.h/fonts.h"; exit 1; }
-	cat $(GRUB_I386)/boot.img $(BUILD)/core.img > $@
-	truncate -s 1474560 $@
-	@echo "$@: GRUB core image $$(( $$(stat -c %s $(BUILD)/core.img) / 1024 )) KB of its 480 KB limit"
+	@# A plain FAT12 floppy: GRUB's boot sector (keeping the FAT header) in
+	@# sector 0, GRUB's core image in the reserved sectors after it, and the
+	@# kernel (gzipped; GRUB unpacks it) and grub.cfg as files. GRUB's image
+	@# holds only GRUB, so it stays small whatever size the game grows to.
+	$(GRUB_MKIMAGE) -O i386-pc -o $(BUILD)/core.img -p /boot/grub \
+	    biosdisk fat gzio normal configfile multiboot vbe video video_fb boot
+	gzip -9 -n -c $(KERNEL) > $(BUILD)/kernel.gz
+	rm -f $@
+	$(MKFS_FAT) -C -F 12 -f 2 -r 224 -R $$(( $$(stat -c %s $(BUILD)/core.img) / 512 + 2 )) -n LETTERLOCK $@ 1440 >/dev/null
+	mmd -i $@ ::/boot ::/boot/grub
+	mcopy -i $@ $(BUILD)/kernel.gz ::/boot/$(KERNEL)
+	mcopy -i $@ grub.cfg ::/boot/grub/grub.cfg
+	cp $(GRUB_I386)/boot.img $(BUILD)/boot.img
+	dd if=$@ of=$(BUILD)/boot.img bs=1 skip=3 seek=3 count=59 conv=notrunc status=none
+	dd if=$(BUILD)/boot.img of=$@ bs=512 count=1 conv=notrunc status=none
+	dd if=$(BUILD)/core.img of=$@ bs=512 seek=1 conv=notrunc status=none
+	@echo "$@: GRUB $$(( $$(stat -c %s $(BUILD)/core.img) / 1024 )) KB + kernel $$(( $$(stat -c %s $(BUILD)/kernel.gz) / 1024 )) KB (gzipped) of 1440 KB"
 
 # ---------------------------------------------------------------- QEMU
 # SOUND=hda (default), ac97 or none. ARGS adds kernel options, e.g. ARGS=debug.

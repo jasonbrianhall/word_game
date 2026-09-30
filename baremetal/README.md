@@ -6,11 +6,11 @@ kernel and a software stand-in for the parts of SDL2 and SDL_ttf it uses.
 Tested in QEMU (not yet on real hardware).
 
 ```
-sudo apt install build-essential qemu-system-x86 grub-pc-bin grub-common xorriso mtools gnu-efi ovmf
-# Fedora: gcc-c++ qemu-system-x86 grub2-tools grub2-tools-extra grub2-pc-modules xorriso mtools gnu-efi-devel edk2-ovmf
+sudo apt install build-essential qemu-system-x86 grub-pc-bin grub-common xorriso mtools dosfstools gnu-efi ovmf
+# Fedora: gcc-c++ qemu-system-x86 grub2-tools grub2-tools-extra grub2-pc-modules xorriso mtools dosfstools gnu-efi-devel edk2-ovmf
 make run          # QEMU, direct kernel boot
 make iso          # letterlock.iso: bootable CD / USB stick
-make floppy       # letterlock-floppy.img: 1.44 MB boot floppy
+make floppy       # letterlock-floppy.img: 1.44 MB FAT12 boot floppy (GRUB + gzipped kernel file)
 make efi          # letterlock.efi: UEFI application (make run-efi tests it under OVMF)
 ```
 
