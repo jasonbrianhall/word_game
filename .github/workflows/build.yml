@@ -1,4 +1,4 @@
-name: Build and Release Wordle (Windows + Linux + Boot Floppy)
+name: Build and Release Letterlock (Windows MSI/MSIX + Boot Floppy)
 
 on:
   push:
@@ -12,9 +12,12 @@ on:
       - '**.c'
       - '**.S'
       - '**.ld'
+      - '**.rc'
       - '**.py'
       - '**.sh'
       - '**.cfg'
+      - '**.png'
+      - '**.ico'
       - '**/Makefile'
       - 'CMakeLists.txt'
       - 'vcpkg.json'
@@ -27,6 +30,13 @@ on:
 
 env:
   PRODUCT_VERSION: "1.0.${{ github.run_number }}.0"
+  UPGRADE_CODE: "44660091-A62D-438E-B17B-F24457BA4949"   # never change: lets new MSIs replace old ones
+  # Microsoft Store identity. Reserve the name "Letterlock" in Partner Center, then copy
+  # Package/Identity/Name and Publisher from Product management > Product identity.
+  # (The Publisher is per developer account, so it matches Willy the Worm's.)
+  MSIX_IDENTITY_NAME: "JasonBrianHall.Letterlock"
+  MSIX_PUBLISHER: "CN=7A3CF65F-504C-42F2-BABD-6A0512A0A017"
+  MSIX_PUBLISHER_DISPLAY: "Jason Brian Hall"
 
 jobs:
   # ------------------------------------------------------------ Windows (MSVC)
@@ -57,9 +67,9 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: C:\vcpkg_bincache
-        key: vcpkg-bincache-wordle-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+        key: vcpkg-bincache-letterlock-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
-          vcpkg-bincache-wordle-${{ matrix.triplet }}-
+          vcpkg-bincache-letterlock-${{ matrix.triplet }}-
 
     - name: Install Dependencies (vcpkg)
       run: |
@@ -70,7 +80,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: C:\vcpkg_bincache
-        key: vcpkg-bincache-wordle-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+        key: vcpkg-bincache-letterlock-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
 
     - name: Configure (CMake, MSVC)
       run: |
@@ -80,21 +90,308 @@ jobs:
       run: |
         cmake --build build --config Release --parallel
 
-    - name: Package
+    - name: Package (portable zip)
       working-directory: build\Release
       run: |
-        if (-not (Test-Path "wordle.exe")) { Write-Error "wordle.exe not found!"; exit 1 }
+        if (-not (Test-Path "letterlock.exe")) { Write-Error "letterlock.exe not found!"; exit 1 }
         Copy-Item "C:\vcpkg\installed\${{ matrix.triplet }}\bin\*.dll" . -ErrorAction SilentlyContinue
-        Copy-Item ..\..\README.md . -ErrorAction SilentlyContinue
+        Copy-Item ..\..\icon.png . -ErrorAction SilentlyContinue
         Write-Host "Package contents:"
-        Get-ChildItem *.exe, *.dll | Format-Table Name, Length
-        Compress-Archive -Path *.exe, *.dll -DestinationPath ..\..\Wordle-Windows-${{ matrix.name }}.zip -Force
+        Get-ChildItem *.exe, *.dll, *.png | Format-Table Name, Length
+        Compress-Archive -Path *.exe, *.dll, *.png -DestinationPath ..\..\Letterlock-Portable-${{ matrix.name }}.zip -Force
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: Wordle-Windows-${{ matrix.name }}
-        path: Wordle-Windows-${{ matrix.name }}.zip
+        name: letterlock-build-${{ matrix.name }}
+        path: Letterlock-Portable-${{ matrix.name }}.zip
+        retention-days: 7
+
+  # ------------------------------------------------------------ MSI (x64; WiX v3 has no ARM64 target)
+  build-msi-windows:
+    needs: build-windows
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: letterlock-build-x64
+        path: .
+
+    - name: Extract Build Files
+      run: |
+        Expand-Archive -Path "Letterlock-Portable-x64.zip" -DestinationPath "msi-source/" -Force
+        Copy-Item icon.ico msi-source/
+
+    - name: Setup WiX Toolset
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" -OutFile "wix.zip"
+        Expand-Archive -Path "wix.zip" -DestinationPath "wix"
+        echo "$env:GITHUB_WORKSPACE\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Generate MSI Installer
+      working-directory: msi-source
+      run: |
+        $version = "${{ env.PRODUCT_VERSION }}"
+        $upgradeCode = "${{ env.UPGRADE_CODE }}"
+
+        # Every file except the exe and the MSI-only icon.ico (DLLs, icon.png)
+        $otherFiles = Get-ChildItem -File | Where-Object { $_.Name -notin @("letterlock.exe", "icon.ico") }
+        $fileEntries = $otherFiles | ForEach-Object {
+          $safeId = "f_" + ($_.Name -replace '[^a-zA-Z0-9]', '_')
+          "                <File Id=`"$safeId`" Name=`"$($_.Name)`" Source=`"$($_.Name)`"/>"
+        }
+
+        @"
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+          <Product Id="*"
+                   Name="Letterlock"
+                   Language="1033"
+                   Version="$version"
+                   Manufacturer="Jason Hall"
+                   UpgradeCode="$upgradeCode">
+
+            <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+                     Description="Letterlock - a word-guessing game"
+                     Manufacturer="Jason Hall" />
+
+            <MajorUpgrade DowngradeErrorMessage="A newer version of Letterlock is already installed."
+                          Schedule="afterInstallInitialize" />
+            <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+            <Icon Id="LetterlockIcon" SourceFile="icon.ico" />
+            <Property Id="ARPPRODUCTICON" Value="LetterlockIcon" />
+            <Property Id="ARPHELPLINK" Value="https://github.com/jasonbrianhall/word_game" />
+            <Property Id="ARPURLINFOABOUT" Value="https://github.com/jasonbrianhall/word_game" />
+            <Property Id="ARPCOMMENTS" Value="Guess the hidden word in 4 to 7 letters" />
+
+            <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+            <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+            <Property Id="DESKTOP_SHORTCUT" Value="1" />
+
+            <Directory Id="TARGETDIR" Name="SourceDir">
+              <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="Letterlock" />
+              </Directory>
+              <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="Letterlock" />
+              </Directory>
+              <Directory Id="DesktopFolder" />
+            </Directory>
+
+            <DirectoryRef Id="INSTALLFOLDER">
+              <Component Id="MainExecutable" Guid="7FE469ED-4B7D-4DCE-AF9C-BA9B5DEB3EA5" Win64="yes">
+                <File Id="letterlock_exe" Name="letterlock.exe" Source="letterlock.exe" />
+
+                <Shortcut Id="StartMenuShortcut"
+                          Directory="ApplicationProgramsFolder"
+                          Name="Letterlock"
+                          Description="Letterlock - a word-guessing game"
+                          Target="[INSTALLFOLDER]letterlock.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="LetterlockIcon"
+                          IconIndex="0" />
+
+                <RegistryValue Root="HKCU" Key="Software\Letterlock" Name="installed"
+                               Type="integer" Value="1" KeyPath="yes" />
+                $($fileEntries -join "`r`n")
+              </Component>
+            </DirectoryRef>
+
+            <DirectoryRef Id="ApplicationProgramsFolder">
+              <Component Id="StartMenuFolder" Guid="6FB8CCC9-CF6B-4F4D-B267-BA2DC04821E5" Win64="yes">
+                <RemoveFolder Id="ApplicationProgramsFolderRemove" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\Letterlock\Shortcuts" Name="StartMenu"
+                               Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+            </DirectoryRef>
+
+            <DirectoryRef Id="DesktopFolder">
+              <Component Id="DesktopShortcut" Guid="1BFB0DE4-DCC0-44DF-B702-E37940C58F3D" Win64="yes">
+                <Condition>DESKTOP_SHORTCUT=1</Condition>
+                <Shortcut Id="DesktopShortcutMain"
+                          Directory="DesktopFolder"
+                          Name="Letterlock"
+                          Description="Letterlock - a word-guessing game"
+                          Target="[INSTALLFOLDER]letterlock.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="LetterlockIcon"
+                          IconIndex="0" />
+                <RegistryValue Root="HKCU" Key="Software\Letterlock\Shortcuts" Name="Desktop"
+                               Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+            </DirectoryRef>
+
+            <Feature Id="MainFeature" Title="Letterlock" Level="1">
+              <ComponentRef Id="MainExecutable" />
+              <ComponentRef Id="StartMenuFolder" />
+              <ComponentRef Id="DesktopShortcut" />
+            </Feature>
+
+            <UIRef Id="WixUI_InstallDir" />
+            <UIRef Id="WixUI_ErrorProgressText" />
+
+            <InstallExecuteSequence>
+              <Custom Action="SetARPINSTALLLOCATION" After="InstallValidate" />
+            </InstallExecuteSequence>
+            <CustomAction Id="SetARPINSTALLLOCATION" Property="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" />
+
+          </Product>
+        </Wix>
+        "@ | Out-File -FilePath "letterlock.wxs" -Encoding UTF8
+
+        @"
+        {\rtf1\ansi\ansicpg1252
+        {\colortbl;\red255\green255\blue255;}
+        \margl1440\margr1440\vieww11900\viewh8605\viewkind0
+        \pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\pardirnatural\partightenfactor0
+        \f0\fs20 \cf0 MIT License\
+        \
+        Copyright (c) 2026 Jason Hall\
+        \
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\
+        \
+        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\
+        \
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.}
+        "@ | Out-File -FilePath "License.rtf" -Encoding ASCII
+
+        Write-Host "Compiling WXS..."
+        & candle.exe -out "letterlock.wixobj" -arch x64 "letterlock.wxs"
+        if ($LASTEXITCODE -ne 0) { Write-Error "Candle failed"; exit 1 }
+
+        Write-Host "Linking MSI..."
+        & light.exe -out "Letterlock.msi" -ext WixUIExtension -ext WixUtilExtension "letterlock.wixobj"
+        if ($LASTEXITCODE -ne 0) { Write-Error "Light failed"; exit 1 }
+        Write-Host "MSI created: Letterlock.msi ($((Get-Item 'Letterlock.msi').Length) bytes)"
+
+    - name: Upload MSI
+      uses: actions/upload-artifact@v4
+      with:
+        name: Letterlock.msi
+        path: msi-source/Letterlock.msi
+        retention-days: 7
+
+  # ------------------------------------------------------------ MSIX (Microsoft Store)
+  build-msix-windows:
+    needs: build-windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            processor_architecture: x64
+          - name: arm64
+            processor_architecture: arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download Build Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: letterlock-build-${{ matrix.name }}
+        path: .
+
+    - name: Prepare MSIX Package Structure
+      run: |
+        New-Item -ItemType Directory -Force -Path "msix-package/Assets"
+        New-Item -ItemType Directory -Force -Path "msix-package/Files"
+        Expand-Archive -Path "Letterlock-Portable-${{ matrix.name }}.zip" -DestinationPath "msix-package/Files/" -Force
+        if (-not (Test-Path "msix-package/Files/letterlock.exe")) { Write-Error "letterlock.exe not found in package!"; exit 1 }
+        Get-ChildItem "msix-package/Files/" -File | Format-Table Name, Length
+
+    - name: Create MSIX Store Compliant Assets
+      run: |
+        $icon = "icon.png"
+        $bg = "#121213"
+        $a = "msix-package/Assets"
+        foreach ($s in @(@(100,50), @(125,63), @(150,75), @(200,100))) {
+          & magick $icon -resize "$($s[1])x$($s[1])" "$a/StoreLogo.scale-$($s[0]).png" }
+        foreach ($s in @(@(100,44), @(125,55), @(150,66), @(200,88))) {
+          & magick $icon -resize "$($s[1])x$($s[1])" "$a/Square44x44Logo.scale-$($s[0]).png" }
+        foreach ($s in @(@(100,150), @(125,188), @(150,225), @(200,300))) {
+          & magick $icon -resize "$($s[1])x$($s[1])" "$a/Square150x150Logo.scale-$($s[0]).png" }
+        foreach ($s in @(@(100,150,310), @(125,188,388), @(150,225,465), @(200,300,620))) {
+          & magick $icon -resize "$($s[1])x$($s[1])" -background $bg -gravity center -extent "$($s[2])x$($s[1])" "$a/Wide310x150Logo.scale-$($s[0]).png" }
+        Get-ChildItem $a | Format-Table Name, Length
+
+    - name: Create MSIX Manifest
+      working-directory: msix-package
+      run: |
+        @"
+        <?xml version="1.0" encoding="utf-8"?>
+        <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+                 xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+                 xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+
+          <Identity
+            Name="${{ env.MSIX_IDENTITY_NAME }}"
+            Publisher="${{ env.MSIX_PUBLISHER }}"
+            Version="${{ env.PRODUCT_VERSION }}"
+            ProcessorArchitecture="${{ matrix.processor_architecture }}" />
+
+          <Properties>
+            <DisplayName>Letterlock</DisplayName>
+            <PublisherDisplayName>${{ env.MSIX_PUBLISHER_DISPLAY }}</PublisherDisplayName>
+            <Description>Crack the hidden word: every guess lights its letters green, yellow or gray. Four modes from 4 to 7 letters, with hints when you're stuck.</Description>
+            <Logo>Assets\StoreLogo.scale-100.png</Logo>
+          </Properties>
+
+          <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+          </Dependencies>
+
+          <Resources>
+            <Resource Language="en-us" />
+          </Resources>
+
+          <Applications>
+            <Application Id="Letterlock" Executable="Files\letterlock.exe" EntryPoint="Windows.FullTrustApplication">
+              <uap:VisualElements DisplayName="Letterlock"
+                                  Description="A word-guessing game"
+                                  Square150x150Logo="Assets\Square150x150Logo.scale-100.png"
+                                  Square44x44Logo="Assets\Square44x44Logo.scale-100.png"
+                                  BackgroundColor="#121213">
+                <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.scale-100.png" ShortName="Letterlock">
+                  <uap:ShowNameOnTiles>
+                    <uap:ShowOn Tile="square150x150Logo"/>
+                    <uap:ShowOn Tile="wide310x150Logo"/>
+                  </uap:ShowNameOnTiles>
+                </uap:DefaultTile>
+                <uap:SplashScreen Image="Assets\Square150x150Logo.scale-100.png" BackgroundColor="#121213" />
+              </uap:VisualElements>
+            </Application>
+          </Applications>
+
+          <Capabilities>
+            <rescap:Capability Name="runFullTrust" />
+          </Capabilities>
+        </Package>
+        "@ | Out-File -FilePath "AppxManifest.xml" -Encoding UTF8
+
+    - name: Build MSIX Package
+      run: |
+        $makeAppx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\" -Directory |
+          Where-Object { $_.Name -match "^10\.0\.\d+\.\d+$" } | Sort-Object { [version]$_.Name } -Descending |
+          ForEach-Object { Join-Path $_.FullName "x64\makeappx.exe" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $makeAppx) { Write-Error "MakeAppx.exe not found."; exit 1 }
+        Write-Host "Using MakeAppx at: $makeAppx"
+        & "$makeAppx" pack /d "msix-package" /p "Letterlock-${{ matrix.name }}.msix" /o
+        if ($LASTEXITCODE -ne 0) { Write-Error "MSIX creation failed"; exit 1 }
+        Write-Host "MSIX created (unsigned, for Store submission): $((Get-Item "Letterlock-${{ matrix.name }}.msix").Length) bytes"
+
+    - name: Upload MSIX
+      uses: actions/upload-artifact@v4
+      with:
+        name: Letterlock-${{ matrix.name }}.msix
+        path: Letterlock-${{ matrix.name }}.msix
         retention-days: 7
 
   # ------------------------------------------------------------ Linux (build check)
@@ -109,7 +406,7 @@ jobs:
         sudo apt-get install -y build-essential libsdl2-dev libsdl2-ttf-dev
 
     - name: Build
-      run: make wordle
+      run: make letterlock
 
   # ------------------------------------------------------------ Boot floppy
   build-booter:
@@ -125,46 +422,62 @@ jobs:
     - name: Build Boot Floppy
       working-directory: baremetal
       run: |
-        make -j"$(nproc)" wordle.elf
+        make -j"$(nproc)" letterlock.elf
         make floppy
-        cp wordle-floppy.img ../Wordle-Booter-Floppy.img
+        cp letterlock-floppy.img ../Letterlock-Booter-Floppy.img
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: Wordle-Booter-Floppy.img
-        path: Wordle-Booter-Floppy.img
+        name: Letterlock-Booter-Floppy.img
+        path: Letterlock-Booter-Floppy.img
         retention-days: 7
 
   # ------------------------------------------------------------ Release
   create-release:
-    needs: [build-windows, build-linux, build-booter]
+    needs: [build-windows, build-msi-windows, build-msix-windows, build-linux, build-booter]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     if: github.event_name == 'push'
 
     steps:
-    - name: Download Windows Builds
+    - name: Download Portable Builds
       uses: actions/download-artifact@v4
       with:
-        pattern: Wordle-Windows-*
+        pattern: letterlock-build-*
+        path: release
+        merge-multiple: true
+
+    - name: Download MSI
+      uses: actions/download-artifact@v4
+      with:
+        name: Letterlock.msi
+        path: release
+
+    - name: Download MSIX Packages
+      uses: actions/download-artifact@v4
+      with:
+        pattern: Letterlock-*.msix
         path: release
         merge-multiple: true
 
     - name: Download Boot Floppy
       uses: actions/download-artifact@v4
       with:
-        name: Wordle-Booter-Floppy.img
+        name: Letterlock-Booter-Floppy.img
         path: release
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          release/Wordle-Windows-x64.zip
-          release/Wordle-Windows-arm64.zip
-          release/Wordle-Booter-Floppy.img
+          release/Letterlock.msi
+          release/Letterlock-x64.msix
+          release/Letterlock-arm64.msix
+          release/Letterlock-Portable-x64.zip
+          release/Letterlock-Portable-arm64.zip
+          release/Letterlock-Booter-Floppy.img
         tag_name: ${{ github.ref == 'refs/heads/main' && format('v{0}', github.run_number) || format('dev-v{0}', github.run_number) }}
         name: ${{ github.ref == 'refs/heads/main' && format('Release v{0}', github.run_number) || format('Dev Build v{0}', github.run_number) }}
         draft: false
@@ -177,16 +490,21 @@ jobs:
           **Commit:** ${{ github.sha }}
           **Build:** #${{ github.run_number }}
 
-          ### 🟩 Wordle
-          Wordle in C++ with SDL2, in four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7. Stuck? HINT (the button on the left, F3 or ?) lists up to ten answers that fit every guess so far, once per guess.
+          ### 🔒 Letterlock
+          Crack the hidden word: each guess lights its letters green (right spot), yellow (in the word) or gray. Four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7. Stuck? HINT (the button on the left, F3 or ?) lists up to ten answers that fit every guess so far, once per guess.
 
           ### 🪟 Windows (SDL2 + MSVC)
-          - **Wordle-Windows-x64.zip** / **Wordle-Windows-arm64.zip** — portable, no installation: unzip and run `wordle.exe`
+          - **Letterlock.msi** — Windows installer with uninstall support (x64)
+          - **Letterlock-x64.msix** / **Letterlock-arm64.msix** — unsigned packages for Microsoft Store submission
+          - **Letterlock-Portable-x64.zip** / **Letterlock-Portable-arm64.zip** — no installation: unzip and run `letterlock.exe`
 
           ### 💾 Booter Edition (bare metal, for virtual machines)
-          - **Wordle-Booter-Floppy.img** — 1.44 MB boot floppy that starts straight into the game with no operating system
+          - **Letterlock-Booter-Floppy.img** — 1.44 MB boot floppy that starts straight into the game with no operating system
 
-          Attach it as a virtual machine's floppy drive and boot from it, e.g. `qemu-system-x86_64 -m 64 -fda Wordle-Booter-Floppy.img -boot a -audiodev pa,id=snd0 -device intel-hda -device hda-output,audiodev=snd0`, or add a floppy controller in VirtualBox. Tested in QEMU and VirtualBox with Intel HD Audio or AC97 sound and a PS/2 or USB keyboard and mouse (in VirtualBox, click inside the window to capture the mouse). **Not yet tested on real hardware.** Needs a 64-bit (x86-64) CPU and at least 16 MB of RAM. Statistics are kept only until reboot; Esc quits, then Enter plays again or Esc reboots.
+          Attach it as a virtual machine's floppy drive and boot from it, e.g. `qemu-system-x86_64 -m 64 -fda Letterlock-Booter-Floppy.img -boot a -audiodev pa,id=snd0 -device intel-hda -device hda-output,audiodev=snd0`, or add a floppy controller in VirtualBox. Tested in QEMU and VirtualBox with Intel HD Audio or AC97 sound and a PS/2 or USB keyboard and mouse (in VirtualBox, click inside the window to capture the mouse). **Not yet tested on real hardware.** Needs a 64-bit (x86-64) CPU and at least 16 MB of RAM. Statistics are kept only until reboot; Esc quits, then Enter plays again or Esc reboots.
+
+          ### 🏪 Microsoft Store Submission
+          The MSIX packages are **unsigned** and ready for submission via Partner Center. Before uploading, make sure `MSIX_IDENTITY_NAME` and `MSIX_PUBLISHER` at the top of `.github/workflows/build.yml` match the identity Partner Center assigned to Letterlock; Microsoft signs the package during certification.
 
           ---
           *Built with ❤️ using GitHub Actions*

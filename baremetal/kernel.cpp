@@ -1,8 +1,8 @@
-// Bare-metal kernel for Wordle.
+// Bare-metal kernel for Letterlock.
 //
 // Boots via Multiboot (GRUB or QEMU -kernel) or the UEFI loader, sets up the
 // framebuffer, memory, timer, PS/2 keyboard and mouse, USB keyboards and mice,
-// and sound, then runs the unchanged wordle.cpp main() on top of the SDL
+// and sound, then runs the unchanged letterlock.cpp main() on top of the SDL
 // stand-in in sdl.cpp.
 #include <stdint.h>
 #include <stddef.h>
@@ -15,7 +15,7 @@
 #include "pci.hpp"
 #include "usb.hpp"
 
-int main(int argc, char** argv);   // wordle.cpp
+int main(int argc, char** argv);   // letterlock.cpp
 
 // ---------------------------------------------------------------- serial
 #define COM1 0x3F8
@@ -386,7 +386,7 @@ static void text_line(int y, const char* s, uint32_t color) {
 
 extern "C" void kmain() {
     serial_init();
-    printf("\nWordle - bare metal\n");
+    printf("\nLetterlock - bare metal\n");
     for (auto f = __init_array_start; f != __init_array_end; f++) (*f)();
 
     const MultibootInfo* mbi = (const MultibootInfo*)(uintptr_t)mb_info;
@@ -414,13 +414,13 @@ extern "C" void kmain() {
     interrupts_init();
 
     for (;;) {
-        printf("Running wordle.cpp\n");
+        printf("Running letterlock.cpp\n");
         main(0, nullptr);
         // The game quit (Esc). Offer to start again rather than rebooting
         // on a stray key press.
         printf("Game exited\n");
         for (uint32_t i = 0; i < back_w * back_h; i++) back[i] = 0x121213;
-        text_line((int)back_h / 2 - 20, "WORDLE HAS QUIT", 0xFFFFFF);
+        text_line((int)back_h / 2 - 20, "LETTERLOCK HAS QUIT", 0xFFFFFF);
         text_line((int)back_h / 2 + 16, "ENTER: PLAY AGAIN    ESC: REBOOT", 0x818384);
         platform_present();
         for (;;) {

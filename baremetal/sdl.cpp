@@ -1,4 +1,4 @@
-// The slice of SDL2 and SDL_ttf that wordle.cpp uses, implemented in software
+// The slice of SDL2 and SDL_ttf that letterlock.cpp uses, implemented in software
 // on the kernel's back buffer, input queues and sound driver.
 //
 //  - SDL_Renderer: solid and outlined rects, alpha-blended textures, and

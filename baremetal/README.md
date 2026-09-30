@@ -1,7 +1,7 @@
-# Bare-metal Wordle
+# Bare-metal Letterlock
 
-Boots straight into Wordle on x86_64 PCs and virtual machines: no OS, no
-libc, no SDL. `../wordle.cpp` is compiled unchanged; this folder supplies the
+Boots straight into Letterlock on x86_64 PCs and virtual machines: no OS, no
+libc, no SDL. `../letterlock.cpp` is compiled unchanged; this folder supplies the
 kernel and a software stand-in for the parts of SDL2 and SDL_ttf it uses.
 Tested in QEMU (not yet on real hardware).
 
@@ -9,9 +9,9 @@ Tested in QEMU (not yet on real hardware).
 sudo apt install build-essential qemu-system-x86 grub-pc-bin grub-common xorriso mtools gnu-efi ovmf
 # Fedora: gcc-c++ qemu-system-x86 grub2-tools grub2-tools-extra grub2-pc-modules xorriso mtools gnu-efi-devel edk2-ovmf
 make run          # QEMU, direct kernel boot
-make iso          # wordle.iso: bootable CD / USB stick
-make floppy       # wordle-floppy.img: 1.44 MB boot floppy
-make efi          # wordle.efi: UEFI application (make run-efi tests it under OVMF)
+make iso          # letterlock.iso: bootable CD / USB stick
+make floppy       # letterlock-floppy.img: 1.44 MB boot floppy
+make efi          # letterlock.efi: UEFI application (make run-efi tests it under OVMF)
 ```
 
 **Input:** PS/2 or USB keyboard, and a PS/2 or USB mouse (USB devices on an

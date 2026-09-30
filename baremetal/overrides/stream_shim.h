@@ -1,7 +1,7 @@
 // Tiny stand-ins for <fstream> and <sstream>.
 //
 // The real ones need libstdc++'s locale and file machinery, which a bare-metal
-// kernel doesn't have. wordle.cpp keeps its statistics in two small text
+// kernel doesn't have. letterlock.cpp keeps its statistics in two small text
 // files; here they live in RAM (lost at reboot) and are read back with just
 // the `>>` extraction and `<<` insertion the game uses. These are explicit
 // specializations of the <iosfwd> class templates for char; the primary

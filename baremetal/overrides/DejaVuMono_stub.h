@@ -1,4 +1,4 @@
-// Force-included ahead of wordle.cpp (-include) so its own DejaVuMono.h, the
+// Force-included ahead of letterlock.cpp (-include) so its own DejaVuMono.h, the
 // 450 KB base64 TTF that only real SDL_ttf needs, is skipped via its include
 // guard. The bare-metal SDL_ttf draws from fonts.h instead, which is baked
 // from that same font by tools/gen_fonts.py. Keeping it out lets the kernel

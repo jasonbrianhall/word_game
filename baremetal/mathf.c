@@ -1,4 +1,4 @@
-/* The few libm functions wordle.cpp's sound synthesis and layout use.
+/* The few libm functions letterlock.cpp's sound synthesis and layout use.
  * Computed in double precision and rounded to float, which is plenty for
  * audio and pixel positions. No libm headers: they'd clash with the builtins. */
 

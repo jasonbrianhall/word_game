@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(wordle CXX)
+project(letterlock CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,14 +15,18 @@ endif()
 find_package(SDL2 CONFIG REQUIRED)
 find_package(SDL2_ttf CONFIG REQUIRED)
 
-add_executable(wordle WIN32 wordle.cpp)
-target_include_directories(wordle PRIVATE ${CMAKE_SOURCE_DIR})
+if(WIN32)
+    add_executable(letterlock WIN32 letterlock.cpp letterlock.rc)   # .rc embeds icon.ico
+else()
+    add_executable(letterlock letterlock.cpp)
+endif()
+target_include_directories(letterlock PRIVATE ${CMAKE_SOURCE_DIR})
 if(MSVC)
-    target_compile_options(wordle PRIVATE /utf-8 /bigobj)
-    target_compile_definitions(wordle PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(letterlock PRIVATE /utf-8 /bigobj)
+    target_compile_definitions(letterlock PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-target_link_libraries(wordle PRIVATE
+target_link_libraries(letterlock PRIVATE
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
     $<IF:$<TARGET_EXISTS:SDL2_ttf::SDL2_ttf>,SDL2_ttf::SDL2_ttf,SDL2_ttf::SDL2_ttf-static>

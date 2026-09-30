@@ -1,5 +1,5 @@
 build/
-wordle.elf
-wordle.iso
-wordle-floppy.img
-wordle.efi
+letterlock.elf
+letterlock.iso
+letterlock-floppy.img
+letterlock.efi

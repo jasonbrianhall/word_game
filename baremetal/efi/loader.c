@@ -1,4 +1,4 @@
-// wordle.efi: UEFI loader for the bare-metal Wordle kernel.
+// letterlock.efi: UEFI loader for the bare-metal Letterlock kernel.
 // (Adapted from the Super Mario Bros. bare-metal loader.)
 //
 // Takes the framebuffer from the Graphics Output Protocol, copies the
@@ -31,7 +31,7 @@ typedef struct { UINT64 r_offset, r_info; INT64 r_addend; } Elf64_Rela;
 static EFI_SYSTEM_TABLE* ST_;
 
 static void fail(CHAR16* msg) {
-    Print(L"\r\nwordle.efi: %s\r\nPress any key to return.\r\n", msg);
+    Print(L"\r\nletterlock.efi: %s\r\nPress any key to return.\r\n", msg);
     UINTN idx;
     uefi_call_wrapper(ST_->BootServices->WaitForEvent, 3, 1, &ST_->ConIn->WaitForKey, &idx);
 }

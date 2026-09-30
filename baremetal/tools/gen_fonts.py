@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Rasterize the game's embedded DejaVu Sans Mono (../DejaVuMono.h) at every
-point size wordle.cpp asks SDL_ttf for, as anti-aliased bitmaps, so the
+point size letterlock.cpp asks SDL_ttf for, as anti-aliased bitmaps, so the
 bare-metal build draws the same text without FreeType.
 
     python3 tools/gen_fonts.py ../DejaVuMono.h > fonts.h        (needs Pillow)
@@ -11,12 +11,12 @@ To keep the kernel small enough for a boot floppy, coverage is stored at 16
 levels (one 0-15 value per byte, which compresses well), and only the
 characters the game can draw are baked: capitals, digits and a little
 punctuation at every size, plus lowercase at the 15 pt size used for the
-"Wordle (muted)" title. Anything else draws as '?'.
+"Letterlock (muted)" title. Anything else draws as '?'.
 """
 import base64, io, re, sys
 from PIL import Image, ImageDraw, ImageFont
 
-SIZES = [11, 13, 14, 15, 16, 18, 20, 30, 34, 36]   # every size wordle.cpp uses
+SIZES = [11, 13, 14, 15, 16, 18, 20, 30, 34, 36]   # every size letterlock.cpp uses
 BASIC = " %()+,-./0123456789:?!'ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 FULL = {15}                                        # sizes that get all of ASCII 32..126
 

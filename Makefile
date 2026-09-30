@@ -3,8 +3,8 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
 LIBS     := $(shell sdl2-config --cflags --libs) -lSDL2_ttf
 WORDLIST ?= /usr/share/dict/linux.words
 
-wordle: wordle.cpp words.h answers.h DejaVuMono.h
-	$(CXX) $(CXXFLAGS) wordle.cpp -o $@ $(LIBS)
+letterlock: letterlock.cpp words.h answers.h DejaVuMono.h
+	$(CXX) $(CXXFLAGS) letterlock.cpp -o $@ $(LIBS)
 
 # words.h and answers.h ship pre-built, so a plain build (and CI) never needs the
 # word list. Regenerate with:  make words     (needs the 'words' package)
@@ -16,6 +16,6 @@ answers:
 	python3 gen_answers.py $(WORDLIST) > answers.h.tmp && mv answers.h.tmp answers.h
 
 clean:
-	rm -f wordle words.h.tmp answers.h.tmp
+	rm -f letterlock words.h.tmp answers.h.tmp
 
 .PHONY: clean words answers

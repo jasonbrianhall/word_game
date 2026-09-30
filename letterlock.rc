@@ -1,0 +1,2 @@
+// Windows resources: the executable's icon (icon.ico, from gen_icon.py).
+IDI_APP_ICON ICON "icon.ico"

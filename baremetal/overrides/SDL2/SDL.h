@@ -1,4 +1,4 @@
-// Minimal SDL2 stand-in for the bare-metal build of wordle.cpp.
+// Minimal SDL2 stand-in for the bare-metal build of letterlock.cpp.
 //
 // Declares only what the game uses: a software SDL_Renderer (rects, textures,
 // alpha blending, logical size), keyboard and mouse events, ticks, the
