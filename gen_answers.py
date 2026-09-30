@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds answers.h: for each word length 4-7, the most common words, ranked by
+"""Builds answers.h: for each word length 4-9, the most common words, ranked by
 real-world English frequency (wordfreq), restricted to words in linux.words that
 are also plain lowercase entries in a standard spelling dictionary (drops
 names/foreign words that linux.words lists in lowercase, e.g. "mavis", "haydn").
@@ -16,7 +16,7 @@ import sys
 
 from wordfreq import zipf_frequency
 
-LENGTHS = (4, 5, 6, 7)
+LENGTHS = (4, 5, 6, 7, 8, 9)
 path = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/dict/linux.words"
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
 filter_path = sys.argv[3] if len(sys.argv) > 3 else "/usr/share/dict/american-english"

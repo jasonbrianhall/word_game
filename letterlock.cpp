@@ -1,6 +1,7 @@
 // Letterlock: a word-guessing game in C++ / SDL2 + SDL_ttf, using the embedded DejaVu Sans Mono font.
 // Guess the hidden word; each letter comes back green (right spot), yellow (in the word) or gray.
-// Four modes: EASY (4 letters, eight guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
+// Six modes: EASY (4 letters, eight guesses), NORMAL (5), HARD (6), EXPERT (7), GENIUS (8) and
+// MENSA (9), six guesses each.
 // Four-letter words give fewer clues per guess, so EASY gets two extra guesses.
 // HINT (button, F3 or ?) suggests ten dictionary words, once per guess: the ones that fit every
 // color so far, topped up with looser scrabbler-style matches, shuffled together.
@@ -43,8 +44,10 @@ static const Mode MODES[] = {
     {"NORMAL", 5, 6, VALID_WORDS_5, VALID_WORDS_5_COUNT, ANSWER_WORDS_5, ANSWER_WORDS_5_COUNT, "stats.txt"},
     {"HARD",   6, 6, VALID_WORDS_6, VALID_WORDS_6_COUNT, ANSWER_WORDS_6, ANSWER_WORDS_6_COUNT, "stats-hard.txt"},
     {"EXPERT", 7, 6, VALID_WORDS_7, VALID_WORDS_7_COUNT, ANSWER_WORDS_7, ANSWER_WORDS_7_COUNT, "stats-expert.txt"},
+    {"GENIUS", 8, 6, VALID_WORDS_8, VALID_WORDS_8_COUNT, ANSWER_WORDS_8, ANSWER_WORDS_8_COUNT, "stats-genius.txt"},
+    {"MENSA",  9, 6, VALID_WORDS_9, VALID_WORDS_9_COUNT, ANSWER_WORDS_9, ANSWER_WORDS_9_COUNT, "stats-mensa.txt"},
 };
-constexpr int NUM_MODES = 4, MAX_LEN = 7, MAX_ROWS = 8;
+constexpr int NUM_MODES = 6, MAX_LEN = 9, MAX_ROWS = 8;
 
 // Binary search of a packed, sorted word list for `w` (lowercase, len letters).
 static bool inList(const char* list, size_t count, int len, const std::string& w) {
@@ -146,7 +149,9 @@ static SDL_Color markColor(Mark m) {
 
 // ---------- Animation timing (ms) ----------
 constexpr float PI = 3.14159265f;
-constexpr int FLIP_MS = 500, FLIP_STAGGER = 300;   // tile reveal
+constexpr int FLIP_MS = 500;                        // tile reveal
+// Delay between tiles flipping: quicker for 8 and 9 letters, so a row still reveals in ~2 s.
+static int flipStagger(int len) { return len <= 7 ? 300 : 200; }
 constexpr int POP_MS = 100;                         // letter typed
 constexpr int SHAKE_MS = 600;                       // invalid guess
 constexpr int BOUNCE_MS = 500, BOUNCE_STAGGER = 100; // win celebration
@@ -241,9 +246,12 @@ struct Audio {
 } g_audio;
 
 // Notes (Hz). Green climbs a C-major pentatonic across the row; yellow uses the octave below.
-static const float GREEN_NOTES[MAX_LEN]  = {523.25f, 587.33f, 659.25f, 783.99f, 880.00f, 1046.50f, 1174.66f}; // C5 D5 E5 G5 A5 C6 D6
-static const float YELLOW_NOTES[MAX_LEN] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00f, 523.25f, 587.33f};   // C4 D4 E4 G4 A4 C5 D5
-static const float WIN_NOTES[MAX_LEN]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f, 1567.98f, 2093.00f}; // C5 E5 G5 C6 E6 G6 C7
+static const float GREEN_NOTES[MAX_LEN]  = {523.25f, 587.33f, 659.25f, 783.99f, 880.00f, 1046.50f, 1174.66f,
+                                            1318.51f, 1567.98f};                                  // C5 D5 E5 G5 A5 C6 D6 E6 G6
+static const float YELLOW_NOTES[MAX_LEN] = {261.63f, 293.66f, 329.63f, 392.00f, 440.00f, 523.25f, 587.33f,
+                                            659.25f, 783.99f};                                    // C4 D4 E4 G4 A4 C5 D5 E5 G5
+static const float WIN_NOTES[MAX_LEN]    = {523.25f, 659.25f, 783.99f, 1046.50f, 1318.51f, 1567.98f, 2093.00f,
+                                            2637.02f, 3135.96f};                                  // C5 E5 G5 C6 E6 G6 C7 E7 G7
 static const float LOSE_NOTES[3]   = {392.00f, 311.13f, 261.63f};                     // G4 Eb4 C4
 
 // ---------- Statistics (saved in the per-user app data folder, one file per mode) ----------
@@ -370,7 +378,7 @@ struct Game {
     int hintsUsed = 0;               // hints asked for this game (recorded in the statistics)
     std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
 
-    Uint32 revealEnd() const { return revealStart + (len - 1) * FLIP_STAGGER + FLIP_MS; }
+    Uint32 revealEnd() const { return revealStart + (len - 1) * flipStagger(len) + FLIP_MS; }
     Stats& stats() { return g_stats[mode]; }
     const Stats& stats() const { return g_stats[mode]; }
     void update(Uint32 now) {
@@ -508,12 +516,12 @@ struct Game {
         }
         // Sounds, timed to each tile's flip midpoint (when its color appears).
         for (int i = 0; i < len; ++i) {
-            int at = i * FLIP_STAGGER + FLIP_MS / 2;
+            int at = i * flipStagger(len) + FLIP_MS / 2;
             if (res[i] == GREEN)       g_audio.play(BELL, GREEN_NOTES[i], 0.32f, at, 1200);
             else if (res[i] == YELLOW) g_audio.play(SOFT, YELLOW_NOTES[i], 0.30f, at, 700);
             else                       g_audio.play(TICK, 150.f, 0.30f, at, 150);
         }
-        int end = (len - 1) * FLIP_STAGGER + FLIP_MS;
+        int end = (len - 1) * flipStagger(len) + FLIP_MS;
         if (cur == answer) {  // rising arpeggio in step with the tile bounce, then a sustained chord
             for (int i = 0; i < len; ++i) g_audio.play(BELL, WIN_NOTES[i], 0.26f, end + i * BOUNCE_STAGGER, 1000);
             for (float f : {523.25f, 659.25f, 783.99f, 1046.50f})
@@ -558,16 +566,18 @@ constexpr int WINDOW_W = PANEL_W + WIN_W;
 static const SDL_Rect GAME_VIEW{PANEL_W, 0, WIN_W, WIN_H}, PANEL_VIEW{0, 0, PANEL_W, WIN_H};
 static const SDL_Rect HINT_BUTTON{20, 84, PANEL_W - 40, 40};   // in window coordinates
 constexpr int GAP = 6, GRID_Y = 84, GRID_BOTTOM = 466;   // the board sits above the messages
-// Tile size: 58 px for six rows (7 tiles still fit the 500 px window), smaller
-// when EASY's eight rows have to fit in the same height.
-static int tileSize(int rows) {
+// Tile size: 58 px when it fits, smaller when EASY's eight rows must fit the
+// height or GENIUS/MENSA's eight or nine letters must fit the 500 px width.
+static int tileSize(int rows, int len) {
     int t = (GRID_BOTTOM - GRID_Y - (rows - 1) * GAP) / rows;
+    int tw = (WIN_W - 20 - (len - 1) * GAP) / len;
+    if (tw < t) t = tw;
     return t < 58 ? t : 58;
 }
 static int gridX(int len, int tile) { return (WIN_W - (len * tile + (len - 1) * GAP)) / 2; }
 
 // Mode tabs under the title.
-constexpr int TAB_W = 100, TAB_H = 26, TAB_GAP = 8, TAB_Y = 50;
+constexpr int TAB_GAP = 6, TAB_W = (WIN_W - 20 - (NUM_MODES - 1) * TAB_GAP) / NUM_MODES, TAB_H = 26, TAB_Y = 50;
 static SDL_Rect tabRect(int m) {
     int x0 = (WIN_W - (NUM_MODES * TAB_W + (NUM_MODES - 1) * TAB_GAP)) / 2;
     return {x0 + m * (TAB_W + TAB_GAP), TAB_Y, TAB_W, TAB_H};
@@ -709,7 +719,7 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
 
     // Board
     Uint32 now = SDL_GetTicks(), t;
-    const int TILE = tileSize(g.rows), letterPt = TILE >= 58 ? 36 : 30;
+    const int TILE = tileSize(g.rows, g.len), letterPt = TILE >= 58 ? 36 : 30;
     for (int row = 0; row < g.rows; ++row) {
         bool typingRow = row == g.row && !g.over;
         std::string s = row < g.row ? g.guesses[row] : (typingRow ? g.cur : "");
@@ -725,7 +735,7 @@ static void render(SDL_Renderer* r, const Game& g, const std::vector<Key>& kb) {
             float sx = 1.f, sy = 1.f;
 
             if (row == g.revealRow) {  // flip: squash to 0 height, swap color at midpoint, expand
-                int ft = (int)(now - g.revealStart) - col * FLIP_STAGGER;
+                int ft = (int)(now - g.revealStart) - col * flipStagger(g.len);
                 if (ft < FLIP_MS / 2) m = PENDING;
                 if (ft > 0 && ft < FLIP_MS) sy = std::fabs(std::cos(ft / (float)FLIP_MS * PI));
             }
@@ -808,7 +818,7 @@ int main(int, char**) {
                 else if (k >= SDLK_a && k <= SDLK_z) game.input((char)('A' + (k - SDLK_a)));
                 else if (k == SDLK_RETURN || k == SDLK_KP_ENTER) game.input('\n');
                 else if (k == SDLK_BACKSPACE) game.input('\b');
-                else if (k >= SDLK_4 && k <= SDLK_7) game.setMode((int)(k - SDLK_4));  // 4-7 letters
+                else if (k >= SDLK_4 && k <= SDLK_9) game.setMode((int)(k - SDLK_4));  // 4-9 letters
                 else if (k == SDLK_F3 || k == SDLK_SLASH) { if (!game.showStats) game.askHint(); }   // F3 or ?
                 else if (k == SDLK_F2) { if (game.revealRow < 0) game.showStats = !game.showStats || game.over; }
                 else if (k == SDLK_ESCAPE) { if (game.showStats && !game.over) game.showStats = false; else quit = true; }
