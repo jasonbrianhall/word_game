@@ -491,7 +491,7 @@ jobs:
           **Build:** #${{ github.run_number }}
 
           ### 🔒 Letterlock
-          Crack the hidden word: each guess lights its letters green (right spot), yellow (in the word) or gray. Four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7. Stuck? HINT (the button on the left, F3 or ?) lists up to ten dictionary words that fit every guess so far, once per guess. Statistics track games won with and without hints.
+          Crack the hidden word: each guess lights its letters green (right spot), yellow (in the word) or gray. Four modes: EASY (4 letters, 8 guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each. Pick a mode with the tabs or keys 4-7. Stuck? HINT (the button on the left, F3 or ?) suggests ten dictionary words once per guess: the ones that fit every color so far, topped up with looser matches so it doesn't give the answer away. Statistics track games won with and without hints.
 
           ### 🪟 Windows (SDL2 + MSVC)
           - **Letterlock.msi** — Windows installer with uninstall support (x64)

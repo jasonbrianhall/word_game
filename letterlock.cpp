@@ -2,7 +2,8 @@
 // Guess the hidden word; each letter comes back green (right spot), yellow (in the word) or gray.
 // Four modes: EASY (4 letters, eight guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
 // Four-letter words give fewer clues per guess, so EASY gets two extra guesses.
-// HINT (button, F3 or ?) lists up to ten dictionary words that fit every guess so far, once per guess.
+// HINT (button, F3 or ?) suggests ten dictionary words, once per guess: the ones that fit every
+// color so far, topped up with looser scrabbler-style matches, shuffled together.
 // Guesses are checked against words.h (all 4- to 7-letter words in linux.words, from gen_words.sh);
 // answers come from answers.h (the ~2000 most common of each length, from gen_answers.py).
 // Build: make   (or: sh gen_words.sh > words.h && g++ -std=c++17 -O2 letterlock.cpp -o letterlock $(sdl2-config --cflags --libs) -lSDL2_ttf)
@@ -364,7 +365,7 @@ struct Game {
     // Hints: up to HINT_MAX dictionary words consistent with every guess so far, one request per guess.
     static constexpr int HINT_MAX = 10;
     std::vector<std::string> hint;   // shown on the left, sorted
-    int hintCount = 0;               // how many words fit (hint may show a sample)
+    int hintCount = 0;               // how many words suggested
     int hintRow = -1;                // row the current hint was asked on; -1 = none
     int hintsUsed = 0;               // hints asked for this game (recorded in the statistics)
     std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
@@ -435,14 +436,39 @@ struct Game {
 
     bool canHint() const { return !over && revealRow < 0 && hintRow != row; }
 
-    // Like scrabbler's -c pattern over the whole dictionary (every word of this
-    // length in linux.words), but checked against every color shown: a word
-    // stays in only if, were it the answer, each earlier guess would have scored
-    // exactly as it did (greens in place, yellows elsewhere, grays absent).
+    // Fuzzy hints over the whole dictionary (every word of this length in
+    // linux.words). First the words that fit every color shown: were each the
+    // answer, every earlier guess would have scored exactly as it did. If fewer
+    // than HINT_MAX fit, the rest are filled with scrabbler-style matches: green
+    // letters in place, no gray letters, each letter used once (plus once per
+    // green spot), yellows ignored. Both kinds are sorted together, so the
+    // list doesn't say which words really fit.
     void askHint() {
         if (!canHint()) return;
         const Mode& md = MODES[mode];
-        std::vector<std::string> fits;
+
+        // What the colors say, scrabbler-style.
+        char green[MAX_LEN] = {};
+        int greens[26] = {};
+        bool seen[26] = {}, gray[26] = {};
+        for (int r = 0; r < row; ++r)
+            for (int i = 0; i < len; ++i) {
+                int c = guesses[r][i] - 'A';
+                if (marks[r][i] == GREEN) { if (!green[i]) ++greens[c]; green[i] = guesses[r][i]; }
+                if (marks[r][i] == GRAY) gray[c] = true; else seen[c] = true;
+            }
+        auto loose = [&](const std::string& w) {
+            int count[26] = {};
+            for (int i = 0; i < len; ++i) {
+                int c = w[i] - 'A';
+                if (green[i] && w[i] != green[i]) return false;
+                if (gray[c] && !seen[c]) return false;       // known absent
+                if (++count[c] > 1 + greens[c]) return false;
+            }
+            return true;
+        };
+
+        std::vector<std::string> exact, fuzzy;
         std::string w(len, ' ');
         for (size_t k = 0; k < md.validCount; ++k) {
             for (int i = 0; i < len; ++i) w[i] = (char)std::toupper((unsigned char)md.valid[k * len + i]);
@@ -451,12 +477,15 @@ struct Game {
                 std::array<Mark, MAX_LEN> sc = score(guesses[r], w, len);
                 for (int i = 0; i < len; ++i) if (sc[i] != marks[r][i]) { ok = false; break; }
             }
-            if (ok) fits.push_back(w);
+            if (ok) exact.push_back(w);
+            else if (loose(w)) fuzzy.push_back(w);
         }
-        hintCount = (int)fits.size();
-        std::shuffle(fits.begin(), fits.end(), rng);
-        hint.assign(fits.begin(), fits.begin() + std::min<size_t>(fits.size(), HINT_MAX));
+        std::shuffle(exact.begin(), exact.end(), rng);
+        std::shuffle(fuzzy.begin(), fuzzy.end(), rng);
+        hint.assign(exact.begin(), exact.begin() + std::min<size_t>(exact.size(), HINT_MAX));
+        for (size_t i = 0; hint.size() < (size_t)HINT_MAX && i < fuzzy.size(); ++i) hint.push_back(fuzzy[i]);
         std::sort(hint.begin(), hint.end());
+        hintCount = (int)hint.size();
         hintRow = row;
         ++hintsUsed;
         g_audio.play(SOFT, 659.25f, 0.18f, 0, 250);
@@ -653,9 +682,7 @@ static void drawHintPanel(SDL_Renderer* r, const Game& g) {
     drawText(r, g.over ? "" : can ? "F3 OR ?" : "ONE PER GUESS", cx, y, 11, KEY_DEFAULT);
     y += 30;
     if (g.hintRow >= 0 && !g.over) {
-        std::string head = g.hintCount == 0 ? "NO MATCHES"
-                         : g.hintCount <= Game::HINT_MAX ? std::to_string(g.hintCount) + (g.hintCount == 1 ? " FITS" : " FIT")
-                         : std::to_string(Game::HINT_MAX) + " OF " + std::to_string(g.hintCount);
+        std::string head = g.hintCount == 0 ? "NO IDEAS" : "MAYBE...";
         drawText(r, head, cx, y, 14, WHITE);
         y += 32;
         for (const std::string& w : g.hint) { drawText(r, w, cx, y, 20, WHITE); y += 30; }
