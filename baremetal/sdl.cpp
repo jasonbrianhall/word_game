@@ -229,10 +229,13 @@ int TTF_GlyphMetrics(TTF_Font* f, Uint16, int* minx, int* maxx, int* miny, int* 
     if (advance) *advance = f->f->adv;
     return 0;
 }
+// Coverage cell for a character; characters that weren't baked draw as '?'.
 static inline const uint8_t* glyph(const BakedFont* f, unsigned char c) {
-    if (c < 32 || c > 126) c = '?';
-    return f->cov + (size_t)(c - 32) * f->height * f->adv;
+    int idx = (c >= 32 && c <= 126) ? f->index[c - 32] : -1;
+    if (idx < 0) idx = f->index['?' - 32];
+    return f->cov + (size_t)idx * f->height * f->adv;
 }
+static inline uint32_t alpha(uint8_t cov) { return cov * 17u; }   // 0-15 -> 0-255
 SDL_Surface* TTF_RenderUTF8_Blended(TTF_Font* font, const char* text, SDL_Color fg) {
     const BakedFont* f = font->f;
     int n = (int)strlen(text);
@@ -246,7 +249,7 @@ SDL_Surface* TTF_RenderUTF8_Blended(TTF_Font* font, const char* text, SDL_Color 
         const uint8_t* g = glyph(f, (unsigned char)text[i]);
         for (int y = 0; y < f->height; y++)
             for (int x = 0; x < f->adv; x++)
-                px[(size_t)y * s->w + i * f->adv + x] = (uint32_t)g[y * f->adv + x] << 24 | rgb;
+                px[(size_t)y * s->w + i * f->adv + x] = alpha(g[y * f->adv + x]) << 24 | rgb;
     }
     return s;
 }
@@ -258,7 +261,7 @@ static void draw_text_px(const char* s, int x, int y, int pt, uint32_t rgb) {
         const uint8_t* g = glyph(f, (unsigned char)*s);
         for (int gy = 0; gy < f->height; gy++)
             for (int gx = 0; gx < f->adv; gx++)
-                if (uint32_t c = g[gy * f->adv + gx]) fill_px(x + gx, y + gy, x + gx + 1, y + gy + 1, rgb, c);
+                if (uint32_t c = alpha(g[gy * f->adv + gx])) fill_px(x + gx, y + gy, x + gx + 1, y + gy + 1, rgb, c);
     }
 }
 void sdl_draw_label(const char* s, int cx, int cy, uint32_t rgb) {

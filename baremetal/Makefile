@@ -149,12 +149,14 @@ $(FLOPPY): $(KERNEL) grub.cfg
 	cp $(KERNEL) $(BUILD)/fd/boot/wordle.elf
 	cp grub.cfg $(BUILD)/fd/boot/grub/grub.cfg
 	tar -C $(BUILD)/fd -cf $(BUILD)/memdisk.tar boot
+	@# GRUB loads its core image (modules + this compressed memdisk) below
+	@# 640 KB, so it must stay under 480 KB, well before the floppy is full.
 	$(GRUB_MKIMAGE) -O i386-pc -o $(BUILD)/core.img -p '(memdisk)/boot/grub' \
-	    -m $(BUILD)/memdisk.tar memdisk tar normal configfile multiboot vbe video video_fb boot
+	    -m $(BUILD)/memdisk.tar memdisk tar normal configfile multiboot vbe video video_fb boot \
+	    || { echo "$@: the kernel no longer fits GRUB's 480 KB floppy core image; use 'make iso' or shrink words.h/fonts.h"; exit 1; }
 	cat $(GRUB_I386)/boot.img $(BUILD)/core.img > $@
-	@test $$(stat -c %s $@) -le 1474560 || { echo "$@: too big for a 1.44 MB floppy"; rm -f $@; exit 1; }
 	truncate -s 1474560 $@
-	@echo "$@: $$(( ($$(stat -c %s $(BUILD)/core.img) + 512) * 100 / 1474560 ))% of a 1.44 MB floppy used"
+	@echo "$@: GRUB core image $$(( $$(stat -c %s $(BUILD)/core.img) / 1024 )) KB of its 480 KB limit"
 
 # ---------------------------------------------------------------- QEMU
 # SOUND=hda (default), ac97 or none. ARGS adds kernel options, e.g. ARGS=debug.
