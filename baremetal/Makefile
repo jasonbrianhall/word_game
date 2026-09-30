@@ -136,6 +136,7 @@ letterlock.efi: efi/loader.c efi/image.S $(EFI_BUILD)/kernel.bin $(EFI_BUILD)/ke
 # ---------------------------------------------------------------- images
 iso: $(ISO)
 $(ISO): $(KERNEL) grub.cfg
+	@grep -q "multiboot /boot/$(KERNEL)" grub.cfg || { echo "grub.cfg doesn't boot /boot/$(KERNEL); update it (or check it in)"; exit 1; }
 	@rm -rf $(BUILD)/iso && mkdir -p $(BUILD)/iso/boot/grub
 	cp $(KERNEL) $(BUILD)/iso/boot/letterlock.elf
 	cp grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
@@ -145,6 +146,7 @@ $(ISO): $(KERNEL) grub.cfg
 # compressed memdisk), behind GRUB's boot sector. No filesystem.
 floppy: $(FLOPPY)
 $(FLOPPY): $(KERNEL) grub.cfg
+	@grep -q "multiboot /boot/$(KERNEL)" grub.cfg || { echo "grub.cfg doesn't boot /boot/$(KERNEL); update it (or check it in)"; exit 1; }
 	@rm -rf $(BUILD)/fd && mkdir -p $(BUILD)/fd/boot/grub
 	cp $(KERNEL) $(BUILD)/fd/boot/letterlock.elf
 	cp grub.cfg $(BUILD)/fd/boot/grub/grub.cfg
