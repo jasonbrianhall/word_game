@@ -2,7 +2,7 @@
 // Guess the hidden word; each letter comes back green (right spot), yellow (in the word) or gray.
 // Four modes: EASY (4 letters, eight guesses), NORMAL (5), HARD (6) and EXPERT (7), six guesses each.
 // Four-letter words give fewer clues per guess, so EASY gets two extra guesses.
-// HINT (button, F3 or ?) lists up to ten answers that fit every guess so far, once per guess.
+// HINT (button, F3 or ?) lists up to ten dictionary words that fit every guess so far, once per guess.
 // Guesses are checked against words.h (all 4- to 7-letter words in linux.words, from gen_words.sh);
 // answers come from answers.h (the ~2000 most common of each length, from gen_answers.py).
 // Build: make   (or: sh gen_words.sh > words.h && g++ -std=c++17 -O2 letterlock.cpp -o letterlock $(sdl2-config --cflags --libs) -lSDL2_ttf)
@@ -348,10 +348,10 @@ struct Game {
     Uint32 revealStart = 0, popStart = 0, shakeStart = 0, bounceStart = 0;
     int popCol = -1;
 
-    // Hints: up to HINT_MAX answers consistent with every guess so far, one request per guess.
+    // Hints: up to HINT_MAX dictionary words consistent with every guess so far, one request per guess.
     static constexpr int HINT_MAX = 10;
     std::vector<std::string> hint;   // shown on the left, sorted
-    int hintCount = 0;               // how many answers fit (hint may show a sample)
+    int hintCount = 0;               // how many words fit (hint may show a sample)
     int hintRow = -1;                // row the current hint was asked on; -1 = none
     std::array<Mark, 26> pendingKeys{};  // keyboard colors applied after the flip finishes
 
@@ -421,24 +421,27 @@ struct Game {
 
     bool canHint() const { return !over && revealRow < 0 && hintRow != row; }
 
-    // Like scrabbler's -c pattern, but checked against every color shown: a word
+    // Like scrabbler's -c pattern over the whole dictionary (every word of this
+    // length in linux.words), but checked against every color shown: a word
     // stays in only if, were it the answer, each earlier guess would have scored
     // exactly as it did (greens in place, yellows elsewhere, grays absent).
     void askHint() {
         if (!canHint()) return;
-        std::vector<const std::string*> fits;
-        for (const std::string& w : answers[mode]) {
+        const Mode& md = MODES[mode];
+        std::vector<std::string> fits;
+        std::string w(len, ' ');
+        for (size_t k = 0; k < md.validCount; ++k) {
+            for (int i = 0; i < len; ++i) w[i] = (char)std::toupper((unsigned char)md.valid[k * len + i]);
             bool ok = true;
             for (int r = 0; r < row && ok; ++r) {
                 std::array<Mark, MAX_LEN> sc = score(guesses[r], w, len);
                 for (int i = 0; i < len; ++i) if (sc[i] != marks[r][i]) { ok = false; break; }
             }
-            if (ok) fits.push_back(&w);
+            if (ok) fits.push_back(w);
         }
         hintCount = (int)fits.size();
         std::shuffle(fits.begin(), fits.end(), rng);
-        hint.clear();
-        for (int i = 0; i < hintCount && i < HINT_MAX; ++i) hint.push_back(*fits[i]);
+        hint.assign(fits.begin(), fits.begin() + std::min<size_t>(fits.size(), HINT_MAX));
         std::sort(hint.begin(), hint.end());
         hintRow = row;
         g_audio.play(SOFT, 659.25f, 0.18f, 0, 250);
