@@ -1,0 +1,5 @@
+build/
+wordle.elf
+wordle.iso
+wordle-floppy.img
+wordle.efi
