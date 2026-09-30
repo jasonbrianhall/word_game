@@ -119,32 +119,67 @@ static bool video_init(const MultibootInfo* mbi) {
     return false;
 }
 
-// ---------------------------------------------------------------- mouse cursor
-// A plain arrow, drawn on the framebuffer after each frame is copied, so the
-// game's own back buffer never contains it. Hidden until the mouse moves.
+// ---------------------------------------------------------------- presenting
+// Only rows that changed since the last present are copied to the screen,
+// found by a per-row checksum, so an idle game costs no screen writes. The
+// mouse cursor is drawn on the screen itself (never in the back buffer) and
+// moved on its own, restoring the rows it leaves from the back buffer.
 static const char* const CURSOR[] = {
     "X           ", "XX          ", "X.X         ", "X..X        ", "X...X       ", "X....X      ",
     "X.....X     ", "X......X    ", "X.......X   ", "X........X  ", "X.........X ", "X..........X",
     "X......XXXXX", "X...X..X    ", "X..XX..X    ", "X.X  X..X   ", "XX   X..X   ", "X     X..X  ",
     "      X..X  ", "       XX   ",
 };
+static const int CURSOR_H = 20;
 static int mouse_x, mouse_y;           // screen pixels
 static bool cursor_on;
+static int shown_x = -1, shown_y = -1; // where the cursor is on screen now (-1: nowhere)
+static uint32_t* row_sum;              // checksum of each row as last copied to the screen
 
-static void draw_cursor() {
-    if (!cursor_on) return;
-    for (int r = 0; r < 20; r++)
+static uint32_t row_checksum(const uint32_t* p, uint32_t n) {
+    uint32_t a = 1, b = 0;                         // Fletcher-style: cheap and order-sensitive
+    for (uint32_t i = 0; i < n; i++) { a += p[i]; b += a; }
+    return a ^ (b << 7) ^ (b >> 25);
+}
+static void copy_row(uint32_t y) {
+    memcpy((void*)&fb[y * fb_pitch], &back[y * back_w], back_w * 4);
+}
+static void draw_cursor_at(int cx, int cy) {
+    for (int r = 0; r < CURSOR_H; r++)
         for (int c = 0; CURSOR[r][c]; c++) {
-            int x = mouse_x + c, y = mouse_y + r;
+            int x = cx + c, y = cy + r;
             if (CURSOR[r][c] == ' ' || x >= (int)fb_w || y >= (int)fb_h) continue;
             fb[y * fb_pitch + x] = CURSOR[r][c] == 'X' ? 0x000000 : 0xFFFFFF;
         }
 }
+// Rows [y0, y0+CURSOR_H) clipped to the screen.
+static void restore_rows(int y0) {
+    for (int y = y0; y < y0 + CURSOR_H && y < (int)fb_h; y++) if (y >= 0) copy_row(y);
+}
+
+// Put the cursor where the mouse is, if it has moved (or appeared).
+static void update_cursor() {
+    if (!cursor_on || (mouse_x == shown_x && mouse_y == shown_y)) return;
+    if (shown_y >= 0) restore_rows(shown_y);
+    draw_cursor_at(mouse_x, mouse_y);
+    shown_x = mouse_x; shown_y = mouse_y;
+}
 
 void platform_present() {
-    for (uint32_t y = 0; y < back_h; y++)
-        memcpy((void*)&fb[y * fb_pitch], &back[y * back_w], back_w * 4);
-    draw_cursor();
+    if (!row_sum) {
+        row_sum = (uint32_t*)malloc(back_h * sizeof(uint32_t));
+        for (uint32_t y = 0; y < back_h; y++) row_sum[y] = ~row_checksum(&back[y * back_w], back_w);
+    }
+    bool under_cursor_changed = false;
+    for (uint32_t y = 0; y < back_h; y++) {
+        uint32_t s = row_checksum(&back[y * back_w], back_w);
+        if (s == row_sum[y]) continue;
+        row_sum[y] = s;
+        copy_row(y);
+        if (shown_y >= 0 && (int)y >= shown_y && (int)y < shown_y + CURSOR_H) under_cursor_changed = true;
+    }
+    if (under_cursor_changed) { restore_rows(shown_y); draw_cursor_at(shown_x, shown_y); }
+    update_cursor();
 }
 
 // ---------------------------------------------------------------- interrupts
@@ -338,6 +373,7 @@ void platform_service() {
     usb_poll();
     poll_keyboard();
     poll_ps2_mouse();
+    update_cursor();
     sdl_pump_audio();
 }
 
