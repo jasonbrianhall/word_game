@@ -2,7 +2,8 @@
 //
 // The real ones need libstdc++'s locale and file machinery, which a bare-metal
 // kernel doesn't have. letterlock.cpp keeps its statistics in two small text
-// files; here they live in RAM (lost at reboot) and are read back with just
+// files; here they live in RAM, backed by the boot floppy when there is one
+// (storage.cpp: platform_file_load/store), and are read back with just
 // the `>>` extraction and `<<` insertion the game uses. These are explicit
 // specializations of the <iosfwd> class templates for char; the primary
 // templates are never defined.
@@ -10,6 +11,10 @@
 #include <iosfwd>
 #include <string>
 #include <map>
+
+// storage.cpp: persistent copies of the files, when a disk is available.
+bool platform_file_load(const char* path, std::string& out);
+void platform_file_store(const char* path, const std::string& all, size_t from, bool append);
 
 namespace std _GLIBCXX_VISIBILITY(default) {
 
@@ -28,7 +33,11 @@ public:
     explicit basic_ifstream(const string& p, int = 0) { open(p.c_str()); }
     void open(const char* p) {
         auto it = __ramfs().find(p);
-        if (it == __ramfs().end()) { fail_ = true; return; }
+        if (it == __ramfs().end()) {
+            string s;
+            if (!platform_file_load(p, s)) { fail_ = true; return; }
+            it = __ramfs().emplace(p, std::move(s)).first;
+        }
         buf_ = it->second; pos_ = 0; fail_ = false; open_ = true;
     }
     bool good() const { return open_ && !fail_; }
@@ -73,14 +82,30 @@ public:
     basic_ofstream() {}
     explicit basic_ofstream(const char* p, int mode = 0) { open(p, mode); }
     explicit basic_ofstream(const string& p, int mode = 0) { open(p.c_str(), mode); }
+    basic_ofstream(const basic_ofstream&) = delete;
+    ~basic_ofstream() { close(); }
+    // Written to disk on close (or destruction): appended bytes only for app.
     void open(const char* p, int mode = 0) {
-        file_ = &__ramfs()[p];
-        if (!(mode & basic_ios<char>::app)) file_->clear();
+        close();
+        auto& fs = __ramfs();
+        path_ = p;
+        append_ = mode & basic_ios<char>::app;
+        if (append_ && !fs.count(p)) {
+            string s;
+            if (platform_file_load(p, s)) fs.emplace(p, std::move(s));
+        }
+        file_ = &fs[p];
+        if (!append_) file_->clear();
+        from_ = file_->size();
     }
     bool good() const { return file_ != nullptr; }
     bool is_open() const { return file_ != nullptr; }
     explicit operator bool() const { return file_ != nullptr; }
-    void close() { file_ = nullptr; }
+    void close() {
+        if (!file_) return;
+        platform_file_store(path_.c_str(), *file_, from_, append_);
+        file_ = nullptr;
+    }
     basic_ofstream& operator<<(const string& s) { if (file_) *file_ += s; return *this; }
     basic_ofstream& operator<<(const char* s) { if (file_) *file_ += s; return *this; }
     basic_ofstream& operator<<(char c) { if (file_) *file_ += c; return *this; }
@@ -89,6 +114,9 @@ public:
     basic_ofstream& operator<<(unsigned v) { if (file_) *file_ += to_string(v); return *this; }
 private:
     string* file_ = nullptr;
+    string path_;
+    size_t from_ = 0;
+    bool append_ = false;
 };
 
 } // namespace std

@@ -49,7 +49,7 @@ KERNEL := letterlock.elf
 ISO    := letterlock.iso
 FLOPPY := letterlock-floppy.img
 
-PLATFORM := kernel sdl runtime stdhooks audio pci usb
+PLATFORM := kernel sdl runtime stdhooks audio pci usb floppy fat12 storage
 LIBOBJS  := tree.o hashtable_c++0x.o hash_bytes.o
 
 OBJS := $(BUILD)/boot.o $(BUILD)/irq.o $(BUILD)/mathf.o \
@@ -143,8 +143,7 @@ $(ISO): $(KERNEL) grub.cfg
 	cp grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
 	$(GRUB_MKRESCUE) -o $@ $(BUILD)/iso 2>/dev/null
 
-# GRUB's core image with the kernel and grub.cfg packed inside it (as a
-# compressed memdisk), behind GRUB's boot sector. No filesystem.
+# A FAT12 floppy that also holds the game's statistics (storage.cpp).
 floppy: $(FLOPPY)
 $(FLOPPY): $(KERNEL) grub.cfg
 	@grep -q "multiboot /boot/$(KERNEL)" grub.cfg || { echo "grub.cfg doesn't boot /boot/$(KERNEL); update it (or check it in)"; exit 1; }

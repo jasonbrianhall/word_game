@@ -14,6 +14,8 @@
 #include "audio.hpp"
 #include "pci.hpp"
 #include "usb.hpp"
+#include "floppy.hpp"
+#include "storage.hpp"
 
 int main(int argc, char** argv);   // letterlock.cpp
 
@@ -370,6 +372,7 @@ static void poll_ps2_mouse() {
 
 // Called from every SDL wait, poll and present: input, USB and sound.
 void platform_service() {
+    floppy_poll();
     usb_poll();
     poll_keyboard();
     poll_ps2_mouse();
@@ -412,6 +415,7 @@ extern "C" void kmain() {
     usb_init(cmdline);
     ps2_mouse_init();
     interrupts_init();
+    storage_init(info.flags, info.boot_device, cmdline);
 
     for (;;) {
         printf("Running letterlock.cpp\n");
