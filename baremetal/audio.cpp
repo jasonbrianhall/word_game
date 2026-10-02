@@ -488,15 +488,26 @@ AudioDriver audio_init(const char* cmdline) {
     }
     if (driver == AUDIO_NONE) { printf("Audio: none\n"); return driver; }
 
+    // Sound is topped up from every SDL wait, poll and present (about every
+    // 1-2 ms), so a short cushion is enough: 20 ms. ISA DMA moves in bursts,
+    // so the Sound Blaster gets 40 ms. Boot option latency=N (milliseconds,
+    // 5..200) overrides it: lower if sound feels late, higher if it crackles.
+    int ms = driver == AUDIO_SB ? 40 : 20;
+    for (const char* p = cmdline; p && *p; p++)
+        if (!strncmp(p, "latency=", 8)) {
+            int v = 0;
+            for (const char* q = p + 8; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+            if (v >= 5 && v <= 200) ms = v;
+        }
     if (driver == AUDIO_SB) {
-        sb_ahead = sb_rate / 15;                       // ~4 frames of latency, as below
+        sb_ahead = sb_rate * ms / 1000;
         sb_write = (sb_play_pos() + sb_ahead) % SB_RING;
-        printf("Audio: %s at %u Hz\n", audio_name(), (unsigned)sb_rate);
+        printf("Audio: %s at %u Hz, %d ms latency\n", audio_name(), (unsigned)sb_rate, ms);
         return driver;
     }
-    target_ahead = kRate / 15;   // ~4 frames of latency
+    target_ahead = (uint32_t)(kRate * ms / 1000);
     write_pos = (audio_play_pos() + target_ahead) % RING_FRAMES;
-    printf("Audio: %s at %d Hz\n", audio_name(), kRate);
+    printf("Audio: %s at %d Hz, %d ms latency\n", audio_name(), kRate, ms);
     return driver;
 }
 
@@ -509,7 +520,7 @@ uint32_t audio_play_pos() {
     }
 }
 
-// How many frames to write now to keep ~1/15 s queued ahead of the hardware.
+// How many frames to write now to keep the latency target queued ahead of the hardware.
 // If the hardware has run past what we wrote (we were busy), restart right
 // at its play position.
 uint32_t audio_frames_wanted() {
