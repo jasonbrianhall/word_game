@@ -22,6 +22,7 @@ uint32_t platform_mods();              // SDL_Keymod bits
 void platform_service();               // poll input, USB and sound
 void platform_present();               // back buffer (+ mouse cursor) to the screen
 void platform_reboot();
+void platform_idle();                  // wait for the next interrupt (hlt; a DPMI yield on DOS)
 
 // ---- sdl.cpp
 void sdl_key_event(int32_t sym, bool down);

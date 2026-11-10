@@ -202,6 +202,7 @@ extern volatile uint8_t kbd_head, kbd_tail;
 extern volatile uint8_t mouse_buf[256];
 extern volatile uint8_t mouse_head, mouse_tail;
 
+void platform_idle() { __asm__ volatile("hlt"); }
 uint32_t platform_ticks() { return ticks; }   // milliseconds (the PIT runs at 1 kHz)
 
 // ---- PS/2 mouse on the i8042's second port

@@ -25,7 +25,7 @@
 int SDL_Init(Uint32) { return 0; }
 int SDL_InitSubSystem(Uint32) { return 0; }
 void SDL_Quit(void) {}
-const char* SDL_GetError(void) { return "unsupported on bare metal"; }
+const char* SDL_GetError(void) { return "unsupported here"; }
 void SDL_Log(const char* fmt, ...) {
     char buf[256];
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
@@ -34,8 +34,16 @@ void SDL_Log(const char* fmt, ...) {
 Uint32 SDL_GetTicks(void) { return platform_ticks(); }
 void SDL_Delay(Uint32 ms) {
     Uint32 end = platform_ticks() + ms;
-    while ((int32_t)(end - platform_ticks()) > 0) { platform_service(); __asm__ volatile("hlt"); }
+    while ((int32_t)(end - platform_ticks()) > 0) { platform_service(); platform_idle(); }
 }
+#ifdef MSDOS
+// MS-DOS: the current directory (8.3 names; DOS truncates the longer ones).
+char* SDL_GetPrefPath(const char*, const char*) {
+    char* p = (char*)malloc(1);
+    p[0] = 0;
+    return p;
+}
+#else
 // Files written under this path live in RAM until reboot (see overrides/stream_shim.h).
 char* SDL_GetPrefPath(const char*, const char* app) {
     size_t n = strlen(app);
@@ -43,6 +51,7 @@ char* SDL_GetPrefPath(const char*, const char* app) {
     p[0] = '/'; memcpy(p + 1, app, n); p[n + 1] = '/'; p[n + 2] = 0;
     return p;
 }
+#endif
 void SDL_free(void* p) { free(p); }
 SDL_Keymod SDL_GetModState(void) { return (SDL_Keymod)platform_mods(); }
 int SDL_ShowCursor(int) { return 1; }
@@ -365,7 +374,7 @@ int SDL_WaitEventTimeout(SDL_Event* e, int timeout_ms) {
         platform_service();
         if (pop(e)) return 1;
         if (timeout_ms >= 0 && (int32_t)(end - platform_ticks()) <= 0) return 0;
-        __asm__ volatile("hlt");
+        platform_idle();
     }
 }
 int32_t sdl_wait_key() {
