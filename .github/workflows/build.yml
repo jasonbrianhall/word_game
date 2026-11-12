@@ -433,9 +433,68 @@ jobs:
         path: Letterlock-Booter-Floppy.img
         retention-days: 7
 
+  # ------------------------------------------------------------ MS-DOS (DJGPP via Docker)
+  build-msdos:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Fetch CWSDPMI
+      working-directory: msdos
+      run: |
+        # The Makefile downloads this itself from one mirror; try several so a
+        # single flaky mirror doesn't fail the release.
+        for url in \
+          http://na.mirror.garr.it/mirrors/djgpp/current/v2misc/csdpmi7b.zip \
+          https://www.mirrorservice.org/sites/ftp.delorie.com/pub/djgpp/current/v2misc/csdpmi7b.zip \
+          http://www.delorie.com/pub/djgpp/current/v2misc/csdpmi7b.zip; do
+          if curl -fsSL --retry 3 -o csdpmi7b.zip "$url" && unzip -t csdpmi7b.zip >/dev/null; then
+            echo "Got CWSDPMI from $url"; break
+          fi
+          rm -f csdpmi7b.zip
+        done
+        test -f csdpmi7b.zip || { echo "Could not download csdpmi7b.zip"; exit 1; }
+        unzip -o csdpmi7b.zip -d csdpmi
+        test -f csdpmi/bin/CWSDSTUB.EXE
+
+    - name: Build (DJGPP Docker image)
+      working-directory: msdos
+      run: |
+        make DOCKER=1 msdos_embedded
+        ls -l letterlk.exe
+
+    - name: Package
+      run: |
+        mkdir -p pkg
+        cp msdos/letterlk.exe pkg/LETTERLK.EXE
+        printf '%s\r\n' \
+          'LETTERLOCK for MS-DOS / FreeDOS' \
+          '' \
+          'Run LETTERLK.EXE. The CWSDPMI DPMI host is built in, so it runs on plain DOS.' \
+          'Needs a 386 with a 387 FPU (a Pentium or better recommended), VGA or VESA video.' \
+          '' \
+          'Options:  LETTERLK /NOSOUND   no sound' \
+          '          LETTERLK /SPEAKER   PC speaker instead of Sound Blaster' \
+          '          LETTERLK /VGA       force VGA 640x480x16' \
+          '          SET LETTERVID=800x600x16   pick a VESA mode' \
+          '' \
+          'A mouse driver (CuteMouse, MOUSE.COM) is optional. Sound Blaster is found' \
+          'through the BLASTER variable. Statistics are saved in the current directory.' \
+          '' \
+          'https://github.com/jasonbrianhall/word_game' > pkg/README.TXT
+        (cd pkg && zip -9 ../Letterlock-MSDOS.zip *)
+        unzip -l Letterlock-MSDOS.zip
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Letterlock-MSDOS.zip
+        path: Letterlock-MSDOS.zip
+        retention-days: 7
+
   # ------------------------------------------------------------ Release
   create-release:
-    needs: [build-windows, build-msi-windows, build-msix-windows, build-linux, build-booter]
+    needs: [build-windows, build-msi-windows, build-msix-windows, build-linux, build-booter, build-msdos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -468,6 +527,12 @@ jobs:
         name: Letterlock-Booter-Floppy.img
         path: release
 
+    - name: Download MS-DOS Build
+      uses: actions/download-artifact@v4
+      with:
+        name: Letterlock-MSDOS.zip
+        path: release
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
@@ -478,6 +543,7 @@ jobs:
           release/Letterlock-Portable-x64.zip
           release/Letterlock-Portable-arm64.zip
           release/Letterlock-Booter-Floppy.img
+          release/Letterlock-MSDOS.zip
         tag_name: ${{ github.ref == 'refs/heads/main' && format('v{0}', github.run_number) || format('dev-v{0}', github.run_number) }}
         name: ${{ github.ref == 'refs/heads/main' && format('Release v{0}', github.run_number) || format('Dev Build v{0}', github.run_number) }}
         draft: false
@@ -502,6 +568,11 @@ jobs:
           - **Letterlock-Booter-Floppy.img** — 1.44 MB boot floppy that starts straight into the game with no operating system
 
           Attach it as a virtual machine's floppy drive and boot from it, e.g. `qemu-system-x86_64 -m 64 -fda Letterlock-Booter-Floppy.img -boot a -audiodev pa,id=snd0 -device intel-hda -device hda-output,audiodev=snd0`, or add a floppy controller in VirtualBox. Tested in QEMU and VirtualBox with Intel HD Audio or AC97 sound and a PS/2 or USB keyboard and mouse (in VirtualBox, click inside the window to capture the mouse). **Not yet tested on real hardware.** Needs a 64-bit (x86-64) CPU and at least 16 MB of RAM. Statistics are kept only until reboot; Esc quits, then Enter plays again or Esc reboots.
+
+          ### 🖥️ MS-DOS / FreeDOS Edition
+          - **Letterlock-MSDOS.zip** — `LETTERLK.EXE` (32-bit DJGPP, CWSDPMI built in) for MS-DOS, FreeDOS or DOSBox
+
+          Needs a 386 with a 387 FPU (Pentium or better recommended) and VGA or VESA video. Sound Blaster (via `BLASTER`) or PC speaker; mouse via any INT 33h driver. Options: `/NOSOUND`, `/SPEAKER`, `/VGA`; `SET LETTERVID=800x600x16` picks a VESA mode. In DOSBox: `mount c .`, `c:`, `LETTERLK`.
 
           ### 🏪 Microsoft Store Submission
           The MSIX packages are **unsigned** and ready for submission via Partner Center. Before uploading, make sure `MSIX_IDENTITY_NAME` and `MSIX_PUBLISHER` at the top of `.github/workflows/build.yml` match the identity Partner Center assigned to Letterlock; Microsoft signs the package during certification.
