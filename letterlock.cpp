@@ -416,7 +416,13 @@ struct Game {
         return revealRow >= 0 || running(popStart, POP_MS, now, t) || running(shakeStart, SHAKE_MS, now, t) ||
                running(bounceStart, (len - 1) * BOUNCE_STAGGER + BOUNCE_MS, now, t);
     }
-    std::mt19937 rng{std::random_device{}()};
+    // Some ports (DJGPP's libstdc++ on MS-DOS) give a random_device that returns the
+    // same values every run, so mix in the current time as well.
+    static std::mt19937 makeRng() {
+        std::seed_seq seq{(unsigned)std::random_device{}(), (unsigned)std::time(nullptr)};
+        return std::mt19937(seq);
+    }
+    std::mt19937 rng = makeRng();
 
     // Answers: the most common words of each length, and only ones the dictionary accepts.
     void loadWords() {
